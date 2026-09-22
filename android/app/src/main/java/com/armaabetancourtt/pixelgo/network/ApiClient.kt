@@ -87,17 +87,36 @@ class ApiClient(
         sourceDeviceId: String,
         destinationDeviceId: String
     ): Transfer {
-        val payload = text.toByteArray(Charsets.UTF_8)
         val kind = inferTextKind(text)
-        val checksum = sha256Hex(payload)
-        val contentType = "text/plain; charset=utf-8"
+        return sendPayload(
+            payload = text.toByteArray(Charsets.UTF_8),
+            kind = kind,
+            displayName = if (kind == "link") "Link" else "Text",
+            contentType = "text/plain; charset=utf-8",
+            sourceDeviceId = sourceDeviceId,
+            destinationDeviceId = destinationDeviceId
+        )
+    }
 
+    suspend fun sendPayload(
+        payload: ByteArray,
+        kind: String,
+        displayName: String,
+        contentType: String,
+        sourceDeviceId: String,
+        destinationDeviceId: String
+    ): Transfer {
+        require(kind in setOf("file", "photo", "link", "text", "clipboard")) {
+            "Unsupported transfer kind."
+        }
+
+        val checksum = sha256Hex(payload)
         val createdBody = JSONObject()
             .put("sourceDeviceId", sourceDeviceId)
             .put("destinationDeviceId", destinationDeviceId)
             .put("kind", kind)
-            .put("displayName", if (kind == "link") "Link" else "Text")
-            .put("contentType", contentType)
+            .put("displayName", displayName.take(255))
+            .put("contentType", contentType.take(255))
             .put("sizeBytes", payload.size)
             .put("sha256", checksum)
             .toString()
