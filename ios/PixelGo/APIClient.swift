@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 
 actor APIClient {
@@ -7,6 +8,7 @@ actor APIClient {
         case noSession
         case refreshFailed
         case realtimeNotConnected
+        case checksumMismatch
 
         var errorDescription: String? {
             switch self {
@@ -20,6 +22,8 @@ actor APIClient {
                 return "Your session expired. Sign in again."
             case .realtimeNotConnected:
                 return "Realtime connection is not active."
+            case .checksumMismatch:
+                return "The received payload failed integrity verification."
             }
         }
     }
@@ -29,6 +33,7 @@ actor APIClient {
     private let sessionStore: SessionStore
     private let decoder: JSONDecoder
     private let encoder = JSONEncoder()
+
     private var refreshTask: Task<TokenPair, Error>?
     private var webSocketTask: URLSessionWebSocketTask?
 
@@ -95,19 +100,100 @@ actor APIClient {
             pushToken: nil
         )
 
-        var request = URLRequest(url: baseURL.appending(path: "/v1/devices"))
-        request.httpMethod = "POST"
-        request.setValue("application/json", forHTTPHeaderField: "Accept")
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.setValue(idempotencyKey, forHTTPHeaderField: "Idempotency-Key")
-        request.httpBody = try encoder.encode(body)
-
-        let device: PixelDevice = try await performAuthenticated(
-            request,
-            retryAfterRefresh: true
+        let device: PixelDevice = try await authenticatedPost(
+            "/v1/devices",
+            body: body,
+            idempotencyKey: idempotencyKey
         )
         try await sessionStore.saveDeviceID(device.id, for: pair.userId)
         return device
+    }
+
+    func sendText(
+        _ text: String,
+        sourceDeviceID: String,
+        destinationDeviceID: String
+    ) async throws -> Transfer {
+        let payload = Data(text.utf8)
+        let kind = inferredTextKind(text)
+        let checksum = sha256Hex(payload)
+        let contentType = "text/plain; charset=utf-8"
+
+        let created: Transfer = try await authenticatedPost(
+            "/v1/transfers",
+            body: CreateTransferRequest(
+                sourceDeviceId: sourceDeviceID,
+                destinationDeviceId: destinationDeviceID,
+                kind: kind.rawValue,
+                displayName: kind == .link ? "Link" : "Text",
+                contentType: contentType,
+                sizeBytes: Int64(payload.count),
+                sha256: checksum
+            ),
+            idempotencyKey: "transfer-create-\(UUID().uuidString.lowercased())"
+        )
+
+        guard let uploadURL = created.uploadUrl else {
+            throw APIError.invalidResponse
+        }
+        try await upload(
+            payload,
+            to: uploadURL,
+            contentType: contentType
+        )
+
+        let ready: Transfer = try await authenticatedMutation(
+            "/v1/transfers/\(created.id)/uploaded",
+            idempotencyKey: "transfer-uploaded-\(created.id)"
+        )
+        return ready
+    }
+
+    func receiveReadyTextItems(
+        destinationDeviceID: String
+    ) async throws -> [ReceivedTextItem] {
+        let transfers = try await listTransfers()
+        var received: [ReceivedTextItem] = []
+
+        for transfer in transfers where
+            transfer.destinationDeviceId == destinationDeviceID &&
+            transfer.status == .ready &&
+            [.text, .link, .clipboard].contains(transfer.kind) {
+            guard let downloadURL = transfer.downloadUrl else {
+                continue
+            }
+
+            let (data, response) = try await session.data(from: downloadURL)
+            guard
+                let http = response as? HTTPURLResponse,
+                (200..<300).contains(http.statusCode)
+            else {
+                throw APIError.invalidResponse
+            }
+
+            guard sha256Hex(data).caseInsensitiveCompare(transfer.sha256) == .orderedSame else {
+                throw APIError.checksumMismatch
+            }
+            guard let text = String(data: data, encoding: .utf8) else {
+                throw APIError.invalidResponse
+            }
+
+            let _: Transfer = try await authenticatedMutation(
+                "/v1/transfers/\(transfer.id)/complete",
+                idempotencyKey: "transfer-complete-\(transfer.id)"
+            )
+
+            received.append(
+                ReceivedTextItem(
+                    id: transfer.id,
+                    kind: transfer.kind,
+                    text: text,
+                    receivedAt: Date()
+                )
+            )
+        }
+
+        return received
     }
 
     func openEvents(deviceID: String) async throws {
@@ -188,6 +274,31 @@ actor APIClient {
         return try await performAuthenticated(request, retryAfterRefresh: true)
     }
 
+    private func authenticatedPost<Body: Encodable, Response: Decodable>(
+        _ path: String,
+        body: Body,
+        idempotencyKey: String
+    ) async throws -> Response {
+        var request = URLRequest(url: baseURL.appending(path: path))
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue(idempotencyKey, forHTTPHeaderField: "Idempotency-Key")
+        request.httpBody = try encoder.encode(body)
+        return try await performAuthenticated(request, retryAfterRefresh: true)
+    }
+
+    private func authenticatedMutation<Response: Decodable>(
+        _ path: String,
+        idempotencyKey: String
+    ) async throws -> Response {
+        var request = URLRequest(url: baseURL.appending(path: path))
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        request.setValue(idempotencyKey, forHTTPHeaderField: "Idempotency-Key")
+        return try await performAuthenticated(request, retryAfterRefresh: true)
+    }
+
     private func performAuthenticated<T: Decodable>(
         _ original: URLRequest,
         retryAfterRefresh: Bool
@@ -228,12 +339,46 @@ actor APIClient {
         return try decoder.decode(T.self, from: data)
     }
 
+    private func upload(
+        _ data: Data,
+        to url: URL,
+        contentType: String
+    ) async throws {
+        var request = URLRequest(url: url)
+        request.httpMethod = "PUT"
+        request.setValue(contentType, forHTTPHeaderField: "Content-Type")
+        request.setValue(String(data.count), forHTTPHeaderField: "Content-Length")
+
+        let (_, response) = try await session.upload(
+            for: request,
+            from: data
+        )
+        guard
+            let http = response as? HTTPURLResponse,
+            (200..<300).contains(http.statusCode)
+        else {
+            throw APIError.invalidResponse
+        }
+    }
+
+    private func inferredTextKind(_ value: String) -> Transfer.Kind {
+        guard
+            let url = URL(string: value.trimmingCharacters(in: .whitespacesAndNewlines)),
+            let scheme = url.scheme?.lowercased(),
+            scheme == "http" || scheme == "https"
+        else {
+            return .text
+        }
+        return .link
+    }
+
+    private func sha256Hex(_ data: Data) -> String {
+        SHA256.hash(data: data)
+            .map { String(format: "%02x", $0) }
+            .joined()
+    }
+
     /// Coalesces simultaneous 401 responses into one refresh-token rotation.
-    ///
-    /// Refresh tokens are one-time-use. Without single-flight coordination,
-    /// two concurrent API calls could both attempt to rotate the same token;
-    /// the second attempt would correctly look like token reuse and revoke
-    /// the entire refresh family.
     private func refreshSession(
         afterFailedAccessToken failedAccessToken: String
     ) async throws -> TokenPair {
@@ -241,7 +386,6 @@ actor APIClient {
             throw APIError.noSession
         }
 
-        // Another request already refreshed while this request was in flight.
         if current.accessToken != failedAccessToken {
             return current
         }
