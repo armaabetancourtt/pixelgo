@@ -158,7 +158,7 @@ func retryBackoff(attempt int) time.Duration {
 	if attempt < 1 {
 		attempt = 1
 	}
-	exp := math.Min(float64(attempt-1), 8)
+	exp := math.Min(float64(attempt-1), 9)
 	delay := time.Duration(math.Pow(2, exp)) * time.Second
 	if delay > 5*time.Minute {
 		return 5 * time.Minute
