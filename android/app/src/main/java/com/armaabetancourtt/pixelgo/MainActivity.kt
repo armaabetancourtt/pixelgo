@@ -47,6 +47,8 @@ import com.armaabetancourtt.pixelgo.network.ApiClient
 import com.armaabetancourtt.pixelgo.network.RealtimeClient
 import com.armaabetancourtt.pixelgo.network.SessionExpiredException
 import com.armaabetancourtt.pixelgo.security.SessionStore
+import com.google.firebase.FirebaseApp
+import com.google.firebase.messaging.FirebaseMessaging
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -199,6 +201,19 @@ private fun PixelGoApp(
                 platform = "android"
             )
             localDeviceId = device.id
+
+            if (FirebaseApp.getApps(context).isNotEmpty()) {
+                FirebaseMessaging.getInstance().token
+                    .addOnSuccessListener { token ->
+                        if (token.isNotBlank()) {
+                            scope.launch {
+                                runCatching {
+                                    api.updatePushToken(device.id, token)
+                                }
+                            }
+                        }
+                    }
+            }
 
             // Durable state repairs anything realtime may have missed while
             // the OS suspended or killed the process.
