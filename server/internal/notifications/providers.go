@@ -226,6 +226,7 @@ type FCMProvider struct {
 	clientEmail string
 	privateKey  *rsa.PrivateKey
 	tokenURI    string
+	baseURL     string
 	client      *http.Client
 
 	mu          sync.Mutex
@@ -263,6 +264,7 @@ func NewFCMProvider(serviceAccountJSON []byte) (*FCMProvider, error) {
 		clientEmail: cfg.ClientEmail,
 		privateKey:  key,
 		tokenURI:    cfg.TokenURI,
+		baseURL:     "https://fcm.googleapis.com",
 		client:      &http.Client{Timeout: 10 * time.Second},
 	}, nil
 }
@@ -295,7 +297,7 @@ func (p *FCMProvider) Send(ctx context.Context, delivery Delivery) error {
 		return err
 	}
 
-	endpoint := "https://fcm.googleapis.com/v1/projects/" +
+	endpoint := strings.TrimRight(p.baseURL, "/") + "/v1/projects/" +
 		url.PathEscape(p.projectID) + "/messages:send"
 	req, err := http.NewRequestWithContext(
 		ctx,
