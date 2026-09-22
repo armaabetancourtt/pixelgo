@@ -341,6 +341,9 @@ Implemented:
 - concurrent refresh coalescing;
 - Keychain session persistence;
 - live API devices / transfers / presence;
+- native PhotosPicker + fileImporter send flows;
+- direct binary upload to S3/MinIO through presigned PUT;
+- verified incoming file/photo download and local save before completion;
 - BackgroundTasks boundary;
 - notification permission boundary;
 - XCTest + host contract tests;
@@ -358,6 +361,9 @@ Implemented:
 - coroutine `Mutex` refresh coalescing;
 - AES-GCM session encryption using Android Keystore;
 - live API devices / transfers / presence;
+- native Photo Picker + document picker send flows;
+- direct binary upload to S3/MinIO through presigned PUT;
+- verified incoming file/photo download and Storage Access Framework save before completion;
 - WorkManager boundary;
 - Room persistence boundary;
 - FCM dependency boundary;
@@ -503,6 +509,8 @@ Full setup: [docs/LOCAL_DEVELOPMENT.md](docs/LOCAL_DEVELOPMENT.md).
 - signed checksum metadata + object HEAD verification;
 - exact-size and destination SHA-256 validation;
 - local in-memory signed adapter fallback;
+- native file/photo selection on iOS and Android;
+- verified binary receive + explicit local save before Delivered;
 - cross-replica retry safety;
 - authenticated E2E lifecycle;
 - cross-platform CI;
@@ -514,8 +522,8 @@ Full setup: [docs/LOCAL_DEVELOPMENT.md](docs/LOCAL_DEVELOPMENT.md).
 
 - object lifecycle / retention, quota and production bucket-policy hardening;
 - real APNs / FCM delivery adapters and push credentials;
-- complete file/photo SEND picker and background upload UX;
-- background destination auto-download;
+- background upload / resume for large payloads;
+- background destination auto-download and save policy;
 - content end-to-end encryption;
 - physical iPhone → Android automated E2E;
 - real TestFlight / Play internal-distribution credentials.
