@@ -40,6 +40,23 @@ struct DevicePresence: Codable, Hashable {
     let online: Bool
 }
 
+struct CreateTransferRequest: Codable {
+    let sourceDeviceId: String
+    let destinationDeviceId: String
+    let kind: String
+    let displayName: String
+    let contentType: String
+    let sizeBytes: Int64
+    let sha256: String
+}
+
+struct ReceivedTextItem: Identifiable, Hashable {
+    let id: String
+    let kind: Transfer.Kind
+    let text: String
+    let receivedAt: Date
+}
+
 struct Transfer: Codable, Identifiable, Hashable {
     enum Kind: String, Codable { case file, photo, link, text, clipboard }
     enum Status: String, Codable { case created, uploading, ready, downloading, completed, failed }
