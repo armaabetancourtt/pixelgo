@@ -284,6 +284,40 @@ private fun PixelGoApp(
         }
     }
 
+    fun sendUri(
+        uri: Uri,
+        kind: String,
+        displayName: String,
+        contentType: String,
+        destinationDeviceId: String
+    ) {
+        val sourceDeviceId = localDeviceId ?: return
+
+        scope.launch {
+            isLoading = true
+            try {
+                api.sendStream(
+                    openStream = {
+                        context.contentResolver.openInputStream(uri)
+                            ?: error("Could not open selected item.")
+                    },
+                    kind = kind,
+                    displayName = displayName,
+                    contentType = contentType,
+                    sourceDeviceId = sourceDeviceId,
+                    destinationDeviceId = destinationDeviceId
+                )
+                reload()
+            } catch (error: SessionExpiredException) {
+                clearAuthenticatedState(error.message)
+            } catch (error: Exception) {
+                errorMessage = error.message ?: "Could not send transfer."
+            } finally {
+                isLoading = false
+            }
+        }
+    }
+
     fun saveIncoming(transfer: Transfer, destinationUri: Uri) {
         scope.launch {
             isLoading = true
@@ -367,6 +401,7 @@ private fun PixelGoApp(
                 isLoading = isLoading,
                 onSend = ::sendText,
                 onSendPayload = ::sendPayload,
+                onSendUri = ::sendUri,
                 onSaveIncoming = ::saveIncoming,
                 onRefresh = {
                     scope.launch {
@@ -485,6 +520,13 @@ private fun HomeScreen(
     onSend: (text: String, destinationDeviceId: String) -> Unit,
     onSendPayload: (
         payload: ByteArray,
+        kind: String,
+        displayName: String,
+        contentType: String,
+        destinationDeviceId: String
+    ) -> Unit,
+    onSendUri: (
+        uri: Uri,
         kind: String,
         displayName: String,
         contentType: String,
@@ -737,6 +779,10 @@ private fun HomeScreen(
             onSendPayload = { payload, kind, name, contentType, destination ->
                 showingSend = false
                 onSendPayload(payload, kind, name, contentType, destination)
+            },
+            onSendUri = { uri, kind, name, contentType, destination ->
+                showingSend = false
+                onSendUri(uri, kind, name, contentType, destination)
             }
         )
     }
@@ -747,10 +793,10 @@ private fun SendDialog(
     destinations: List<PixelDevice>,
     onDismiss: () -> Unit,
     onSendText: (String, String) -> Unit,
-    onSendPayload: (ByteArray, String, String, String, String) -> Unit
+    onSendPayload: (ByteArray, String, String, String, String) -> Unit,
+    onSendUri: (Uri, String, String, String, String) -> Unit
 ) {
     val context = LocalContext.current
-    val scope = rememberCoroutineScope()
 
     var selectedDeviceId by remember {
         mutableStateOf(destinations.first().id)
@@ -758,13 +804,8 @@ private fun SendDialog(
     var text by remember { mutableStateOf("") }
     var pickerError by remember { mutableStateOf<String?>(null) }
 
-    suspend fun sendUri(uri: Uri, kind: String) {
+    fun dispatchUri(uri: Uri, kind: String) {
         try {
-            val payload = withContext(Dispatchers.IO) {
-                context.contentResolver.openInputStream(uri)?.use {
-                    it.readBytes()
-                } ?: error("Could not read selected item.")
-            }
             val contentType = context.contentResolver.getType(uri)
                 ?: "application/octet-stream"
             val displayName = queryDisplayName(
@@ -772,15 +813,15 @@ private fun SendDialog(
                 uri
             ) ?: if (kind == "photo") "Photo" else "File"
 
-            onSendPayload(
-                payload,
+            onSendUri(
+                uri,
                 kind,
                 displayName,
                 contentType,
                 selectedDeviceId
             )
         } catch (error: Exception) {
-            pickerError = error.message ?: "Could not read selected item."
+            pickerError = error.message ?: "Could not inspect selected item."
         }
     }
 
@@ -788,7 +829,7 @@ private fun SendDialog(
         ActivityResultContracts.PickVisualMedia()
     ) { uri ->
         if (uri != null) {
-            scope.launch { sendUri(uri, "photo") }
+            dispatchUri(uri, "photo")
         }
     }
 
@@ -796,7 +837,7 @@ private fun SendDialog(
         ActivityResultContracts.GetContent()
     ) { uri ->
         if (uri != null) {
-            scope.launch { sendUri(uri, "file") }
+            dispatchUri(uri, "file")
         }
     }
 
@@ -901,7 +942,7 @@ private fun SendDialog(
                 }
 
                 Text(
-                    "Selected bytes upload directly to object storage through a short-lived signed URL.",
+                    "Selected files are hashed and streamed directly to object storage through a short-lived signed URL.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
