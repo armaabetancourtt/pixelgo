@@ -1,3 +1,4 @@
+import Foundation
 import SwiftUI
 import UIKit
 import UserNotifications
@@ -118,10 +119,44 @@ final class AppModel: ObservableObject {
         _ text: String,
         to destinationDeviceID: String
     ) async -> Bool {
-        guard
-            let sourceDeviceID = localDeviceID,
-            !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-        else {
+        guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return false
+        }
+
+        return await performSend { sourceDeviceID in
+            try await api.sendText(
+                text,
+                sourceDeviceID: sourceDeviceID,
+                destinationDeviceID: destinationDeviceID
+            )
+        }
+    }
+
+    func sendPayload(
+        _ data: Data,
+        kind: Transfer.Kind,
+        displayName: String,
+        contentType: String,
+        to destinationDeviceID: String
+    ) async -> Bool {
+        guard !data.isEmpty else { return false }
+
+        return await performSend { sourceDeviceID in
+            try await api.sendPayload(
+                data,
+                kind: kind,
+                displayName: displayName,
+                contentType: contentType,
+                sourceDeviceID: sourceDeviceID,
+                destinationDeviceID: destinationDeviceID
+            )
+        }
+    }
+
+    private func performSend(
+        operation: (String) async throws -> Transfer
+    ) async -> Bool {
+        guard let sourceDeviceID = localDeviceID else {
             return false
         }
 
@@ -129,11 +164,7 @@ final class AppModel: ObservableObject {
         defer { isLoading = false }
 
         do {
-            _ = try await api.sendText(
-                text,
-                sourceDeviceID: sourceDeviceID,
-                destinationDeviceID: destinationDeviceID
-            )
+            _ = try await operation(sourceDeviceID)
             await reload()
             return true
         } catch APIClient.APIError.refreshFailed {
