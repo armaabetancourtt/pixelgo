@@ -416,7 +416,7 @@ components:
         platform:
           type: string
           enum: [ios, android]
-        pushToken: { type: string }
+        pushToken: { type: string, maxLength: 4096 }
     TransferKind:
       type: string
       enum: [file, photo, link, text, clipboard]
