@@ -344,8 +344,9 @@ components:
           minLength: 32
     TokenPair:
       type: object
-      required: [accessToken, refreshToken, tokenType, expiresInSeconds]
+      required: [userId, accessToken, refreshToken, tokenType, expiresInSeconds]
       properties:
+        userId: { type: string }
         accessToken: { type: string }
         refreshToken: { type: string }
         tokenType:
