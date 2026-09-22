@@ -27,6 +27,7 @@ class SessionStore(
             val plaintext = crypto.decrypt(encrypted)
             val json = JSONObject(plaintext.toString(Charsets.UTF_8))
             TokenPair(
+                userId = json.getString("userId"),
                 accessToken = json.getString("accessToken"),
                 refreshToken = json.getString("refreshToken"),
                 tokenType = json.getString("tokenType"),
@@ -41,6 +42,7 @@ class SessionStore(
     @Synchronized
     fun save(pair: TokenPair) {
         val payload = JSONObject()
+            .put("userId", pair.userId)
             .put("accessToken", pair.accessToken)
             .put("refreshToken", pair.refreshToken)
             .put("tokenType", pair.tokenType)
