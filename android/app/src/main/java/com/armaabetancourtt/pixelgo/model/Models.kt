@@ -1,6 +1,7 @@
 package com.armaabetancourtt.pixelgo.model
 
 data class TokenPair(
+    val userId: String,
     val accessToken: String,
     val refreshToken: String,
     val tokenType: String,
