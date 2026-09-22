@@ -44,12 +44,13 @@ def bearer(access_token, extra=None):
     return headers
 
 
-def upload(url, payload, content_type):
+def upload(url, payload, content_type, checksum):
     req = urllib.request.Request(url, data=payload, method="PUT")
     req.add_header("Content-Type", content_type)
     req.add_header("Content-Length", str(len(payload)))
+    req.add_header("X-Amz-Meta-Sha256", checksum)
     with urllib.request.urlopen(req, timeout=3) as response:
-        assert response.status == 204, response.status
+        assert 200 <= response.status < 300, response.status
 
 
 def download(url):
@@ -115,9 +116,9 @@ def main():
 
     assert transfer["status"] == "uploading", transfer
     assert retry["id"] == transfer["id"], (transfer, retry)
-    assert transfer["uploadUrl"].startswith("http://localhost:8080/dev-upload/")
+    assert transfer["id"] in transfer["uploadUrl"]
 
-    upload(transfer["uploadUrl"], payload, "text/plain")
+    upload(transfer["uploadUrl"], payload, "text/plain", checksum)
 
     ready = request(
         "POST",
@@ -125,7 +126,7 @@ def main():
         headers=bearer(access, {"Idempotency-Key": "e2e-transfer-uploaded"}),
     )
     assert ready["status"] == "ready", ready
-    assert ready["downloadUrl"].startswith("http://localhost:8080/dev-download/")
+    assert transfer["id"] in ready["downloadUrl"]
 
     received = download(ready["downloadUrl"])
     assert received == payload
