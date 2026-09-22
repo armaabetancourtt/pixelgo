@@ -299,3 +299,31 @@ func TestCreateCountsUnicodeDisplayNameCharacters(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+
+func TestCreateRejectsMalformedChecksum(t *testing.T) {
+	service := NewService(
+		NewMemoryRepository(),
+		&noOpPublisher{},
+		fakeURLs{},
+	)
+
+	for _, value := range []string{
+		"",
+		strings.Repeat("a", 63),
+		strings.Repeat("a", 65),
+		strings.Repeat("g", 64),
+		checksum + "suffix",
+	} {
+		_, err := service.Create(context.Background(), CreateInput{
+			SourceDeviceID:      "ios-1",
+			DestinationDeviceID: "android-1",
+			Kind:                KindFile,
+			SizeBytes:           1,
+			SHA256:              value,
+		})
+		if err != ErrInvalidInput {
+			t.Fatalf("checksum %q: expected invalid input, got %v", value, err)
+		}
+	}
+}
