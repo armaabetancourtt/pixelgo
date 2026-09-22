@@ -11,6 +11,28 @@ import (
 	"github.com/coder/websocket"
 )
 
+func TestLegacyWebSocketConnectionStillWorksWithoutDeviceID(t *testing.T) {
+	store := presence.NewMemoryStore()
+	hub := NewHub(store)
+	server := httptest.NewServer(hub)
+	defer server.Close()
+
+	wsURL := "ws" + strings.TrimPrefix(server.URL, "http")
+	conn, _, err := websocket.Dial(context.Background(), wsURL, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = conn.Close(websocket.StatusNormalClosure, "test complete") }()
+
+	state, err := store.Online(context.Background(), []string{"dev_unknown"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state["dev_unknown"] {
+		t.Fatal("legacy connection must not fabricate device presence")
+	}
+}
+
 func TestWebSocketConnectionControlsPresenceLease(t *testing.T) {
 	store := presence.NewMemoryStore()
 	hub := NewHub(store)
