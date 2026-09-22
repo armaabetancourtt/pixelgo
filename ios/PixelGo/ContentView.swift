@@ -501,13 +501,12 @@ private struct SendView: View {
         }
 
         do {
-            let data = try Data(contentsOf: url, options: .mappedIfSafe)
             let values = try? url.resourceValues(forKeys: [.contentTypeKey])
             let mime = values?.contentType?.preferredMIMEType
                 ?? "application/octet-stream"
 
-            if await model.sendPayload(
-                data,
+            if await model.sendFile(
+                at: url,
                 kind: .file,
                 displayName: url.lastPathComponent,
                 contentType: mime,
