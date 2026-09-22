@@ -147,7 +147,15 @@ jobs:
           trap stop_api EXIT
 
           start_api
+
+          curl --fail --silent -D /tmp/health-headers.txt \
+            http://127.0.0.1:8080/health >/dev/null
+          grep -qi '^X-Request-ID:' /tmp/health-headers.txt
+
           python3 ../tests/e2e/transfer_flow.py
+
+          curl --fail --silent http://127.0.0.1:8080/metrics \
+            | grep -q 'pixelgo_http_requests_total'
 
           stop_api
           API_PID=""
