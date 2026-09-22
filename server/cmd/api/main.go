@@ -158,7 +158,14 @@ func main() {
 		fatal(logger, "push configuration invalid", "error", err)
 	}
 	if notificationRepo != nil && pushRouter.Configured() {
-		worker := notifications.NewWorker(notificationRepo, pushRouter, logger)
+		worker := notifications.NewWorker(
+			notificationRepo,
+			notifications.OfflineOnlySender{
+				Presence: presenceStore,
+				Next:     pushRouter,
+			},
+			logger,
+		)
 		go worker.Run(context.Background())
 		logger.Info(
 			"push worker configured",
