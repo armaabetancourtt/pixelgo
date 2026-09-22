@@ -40,7 +40,7 @@ final class TransferDecodingTests: XCTestCase {
         decoder.dateDecodingStrategy = .iso8601
         let device = try decoder.decode(PixelDevice.self, from: json)
 
-        XCTAssertTrue(device.online)
+        XCTAssertEqual(device.online, true)
         XCTAssertEqual(device.platform, "ios")
     }
 }
