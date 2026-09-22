@@ -15,9 +15,9 @@ import (
 )
 
 const (
-	presenceTTL      = 45 * time.Second
-	heartbeatEvery   = 15 * time.Second
-	presenceTimeout  = 2 * time.Second
+	presenceTTL     = 45 * time.Second
+	heartbeatEvery  = 15 * time.Second
+	presenceTimeout = 2 * time.Second
 )
 
 type Event struct {
@@ -29,6 +29,7 @@ type Event struct {
 type client struct {
 	deviceID string
 	leaseID  string
+	writeMu  *sync.Mutex
 }
 
 type Hub struct {
@@ -60,16 +61,18 @@ func (h *Hub) Publish(eventType string, payload any) {
 	}
 
 	h.mu.RLock()
-	clients := make([]*websocket.Conn, 0, len(h.clients))
-	for conn := range h.clients {
-		clients = append(clients, conn)
+	clients := make(map[*websocket.Conn]client, len(h.clients))
+	for conn, state := range h.clients {
+		clients[conn] = state
 	}
 	h.mu.RUnlock()
 
-	for _, conn := range clients {
+	for conn, state := range clients {
+		state.writeMu.Lock()
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		_ = conn.Write(ctx, websocket.MessageText, data)
 		cancel()
+		state.writeMu.Unlock()
 	}
 }
 
@@ -105,7 +108,11 @@ func (h *Hub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	h.mu.Lock()
-	h.clients[conn] = client{deviceID: deviceID, leaseID: leaseID}
+	h.clients[conn] = client{
+		deviceID: deviceID,
+		leaseID:  leaseID,
+		writeMu:  &sync.Mutex{},
+	}
 	h.mu.Unlock()
 
 	if !wasOnline {
