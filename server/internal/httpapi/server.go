@@ -16,6 +16,7 @@ import (
 	"github.com/armaabetancourtt/pixelgo/server/internal/presence"
 	"github.com/armaabetancourtt/pixelgo/server/internal/realtime"
 	"github.com/armaabetancourtt/pixelgo/server/internal/transfers"
+	"github.com/redis/go-redis/v9"
 )
 
 const maxDevBlobBytes int64 = 64 << 20
@@ -28,12 +29,19 @@ func WithPresence(store presence.Store) Option {
 	}
 }
 
+func WithRedisIdempotency(client *redis.Client) Option {
+	return func(s *Server) {
+		s.idempotencyRedis = client
+	}
+}
+
 type Server struct {
 	devices   *devices.Service
 	transfers *transfers.Service
 	hub       *realtime.Hub
 	files     *files.Service
-	presence  presence.Store
+	presence         presence.Store
+	idempotencyRedis *redis.Client
 }
 
 func New(
@@ -73,6 +81,10 @@ func New(
 	// with direct object-storage signed URLs.
 	mux.HandleFunc("PUT /dev-upload/{transferId}", s.devUpload)
 	mux.HandleFunc("GET /dev-download/{transferId}", s.devDownload)
+
+	if s.idempotencyRedis != nil {
+		return withRedisIdempotency(mux, s.idempotencyRedis, 24*time.Hour)
+	}
 
 	idempotency := newIdempotencyStore(24 * time.Hour)
 	return withIdempotency(mux, idempotency)
