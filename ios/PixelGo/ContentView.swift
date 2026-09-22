@@ -100,6 +100,7 @@ private struct HomeView: View {
     @State private var exportDocument = PayloadDocument(data: Data())
     @State private var exportFilename = "PIXEL-GO-File"
     @State private var exportTransferID: String?
+    @State private var exportTemporaryURL: URL?
 
     private var destinationDevices: [PixelDevice] {
         model.devices.filter { $0.id != model.localDeviceID }
@@ -208,13 +209,14 @@ private struct HomeView: View {
 
                                 Button("Save") {
                                     Task {
-                                        guard let data = await model.downloadPayload(
+                                        guard let fileURL = await model.downloadPayloadFile(
                                             for: transfer
                                         ) else {
                                             return
                                         }
 
-                                        exportDocument = PayloadDocument(data: data)
+                                        exportDocument = PayloadDocument(fileURL: fileURL)
+                                        exportTemporaryURL = fileURL
                                         exportFilename = transfer.displayName
                                             ?? (transfer.kind == .photo
                                                 ? "PIXEL-GO-Photo"
@@ -284,14 +286,24 @@ private struct HomeView: View {
                 contentType: .data,
                 defaultFilename: exportFilename
             ) { result in
+                let temporaryURL = exportTemporaryURL
+
                 switch result {
                 case .success:
                     guard let transferID = exportTransferID else { return }
                     Task {
                         await model.completeIncomingTransfer(transferID)
+                        if let temporaryURL {
+                            try? FileManager.default.removeItem(at: temporaryURL)
+                        }
+                        exportTemporaryURL = nil
                         exportTransferID = nil
                     }
                 case .failure(let error):
+                    if let temporaryURL {
+                        try? FileManager.default.removeItem(at: temporaryURL)
+                    }
+                    exportTemporaryURL = nil
                     model.errorMessage = error.localizedDescription
                     exportTransferID = nil
                 }
@@ -536,17 +548,31 @@ private func inboxLabel(for kind: Transfer.Kind) -> String {
 private struct PayloadDocument: FileDocument {
     static var readableContentTypes: [UTType] { [.data] }
 
-    var data: Data
+    private enum Source {
+        case data(Data)
+        case file(URL)
+    }
+
+    private var source: Source
 
     init(data: Data) {
-        self.data = data
+        source = .data(data)
+    }
+
+    init(fileURL: URL) {
+        source = .file(fileURL)
     }
 
     init(configuration: ReadConfiguration) throws {
-        data = configuration.file.regularFileContents ?? Data()
+        source = .data(configuration.file.regularFileContents ?? Data())
     }
 
     func fileWrapper(configuration: WriteConfiguration) throws -> FileWrapper {
-        FileWrapper(regularFileWithContents: data)
+        switch source {
+        case .data(let data):
+            return FileWrapper(regularFileWithContents: data)
+        case .file(let fileURL):
+            return try FileWrapper(url: fileURL, options: [])
+        }
     }
 }
