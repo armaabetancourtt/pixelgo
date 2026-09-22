@@ -25,7 +25,7 @@ services:
       - pixelgo-redis:/data
 
   minio:
-    image: minio/minio:latest
+    image: quay.io/minio/minio
     command: server /data --console-address ":9001"
     environment:
       MINIO_ROOT_USER: pixelgo
