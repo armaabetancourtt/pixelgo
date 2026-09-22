@@ -21,6 +21,8 @@ class ApiClient(
 
     fun hasStoredSession(): Boolean = sessionStore.load() != null
 
+    fun currentSession(): TokenPair? = sessionStore.load()
+
     suspend fun register(email: String, password: String) {
         val pair = publicAuthPost(
             "/v1/auth/register",
@@ -44,6 +46,37 @@ class ApiClient(
     suspend fun health() {
         execute("GET", "/health", accessToken = null)
             .requireSuccess()
+    }
+
+    suspend fun ensureCurrentDevice(
+        name: String,
+        platform: String
+    ): PixelDevice {
+        val session = sessionStore.load() ?: throw NoSessionException()
+
+        sessionStore.deviceId(session.userId)?.let { storedId ->
+            val devices = listDevices()
+            devices.firstOrNull { it.id == storedId }?.let { return it }
+        }
+
+        val idempotencyKey = sessionStore.registrationKey(session.userId)
+        val response = authenticatedRequest(
+            method = "POST",
+            path = "/v1/devices",
+            body = JSONObject()
+                .put("name", name.take(120))
+                .put("platform", platform)
+                .toString(),
+            headers = mapOf("Idempotency-Key" to idempotencyKey)
+        )
+        val item = JSONObject(response)
+        val device = PixelDevice(
+            id = item.getString("id"),
+            name = item.getString("name"),
+            platform = item.getString("platform")
+        )
+        sessionStore.saveDeviceId(session.userId, device.id)
+        return device
     }
 
     suspend fun listDevices(): List<PixelDevice> {
@@ -88,11 +121,22 @@ class ApiClient(
     }
 
     private suspend fun authenticatedGet(path: String): String {
+        return authenticatedRequest("GET", path)
+    }
+
+    private suspend fun authenticatedRequest(
+        method: String,
+        path: String,
+        body: String? = null,
+        headers: Map<String, String> = emptyMap()
+    ): String {
         val initial = sessionStore.load() ?: throw NoSessionException()
         val first = execute(
-            method = "GET",
+            method = method,
             path = path,
-            accessToken = initial.accessToken
+            body = body,
+            accessToken = initial.accessToken,
+            headers = headers
         )
 
         if (first.status != HttpURLConnection.HTTP_UNAUTHORIZED) {
@@ -108,9 +152,11 @@ class ApiClient(
 
         val refreshed = sessionStore.load() ?: throw SessionExpiredException()
         return execute(
-            method = "GET",
+            method = method,
             path = path,
-            accessToken = refreshed.accessToken
+            body = body,
+            accessToken = refreshed.accessToken,
+            headers = headers
         ).requireSuccess()
     }
 
@@ -147,6 +193,7 @@ class ApiClient(
         )
         val payload = JSONObject(response.requireSuccess())
         return TokenPair(
+            userId = payload.getString("userId"),
             accessToken = payload.getString("accessToken"),
             refreshToken = payload.getString("refreshToken"),
             tokenType = payload.getString("tokenType"),
@@ -158,7 +205,8 @@ class ApiClient(
         method: String,
         path: String,
         body: String? = null,
-        accessToken: String?
+        accessToken: String?,
+        headers: Map<String, String> = emptyMap()
     ): HttpResult = withContext(Dispatchers.IO) {
         val connection = URL(
             baseUrl.trimEnd('/') + path
@@ -175,6 +223,9 @@ class ApiClient(
                     "Authorization",
                     "Bearer $accessToken"
                 )
+            }
+            for ((key, value) in headers) {
+                connection.setRequestProperty(key, value)
             }
 
             if (body != null) {
