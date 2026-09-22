@@ -173,22 +173,9 @@ class ApiClient(
                 continue
             }
 
-            val downloadUrl = transfer.downloadUrl ?: continue
-            val payload = downloadSigned(downloadUrl)
-            if (!sha256Hex(payload).equals(transfer.sha256, ignoreCase = true)) {
-                throw ChecksumMismatchException()
-            }
-
+            val payload = downloadPayload(transfer)
             val text = payload.toString(Charsets.UTF_8)
-
-            authenticatedRequest(
-                method = "POST",
-                path = "/v1/transfers/" + transfer.id + "/complete",
-                headers = mapOf(
-                    "Idempotency-Key" to
-                        "transfer-complete-" + transfer.id
-                )
-            )
+            completeTransfer(transfer.id)
 
             received += ReceivedTextItem(
                 id = transfer.id,
@@ -198,6 +185,36 @@ class ApiClient(
         }
 
         return received
+    }
+
+    suspend fun downloadPayload(transfer: Transfer): ByteArray {
+        val downloadUrl = transfer.downloadUrl ?: throw InvalidTransferException(
+            "Server did not return a download URL."
+        )
+        val payload = downloadSigned(downloadUrl)
+
+        if (payload.size.toLong() != transfer.sizeBytes) {
+            throw ChecksumMismatchException()
+        }
+        if (!sha256Hex(payload).equals(transfer.sha256, ignoreCase = true)) {
+            throw ChecksumMismatchException()
+        }
+        return payload
+    }
+
+    suspend fun completeTransfer(transferId: String): Transfer {
+        return parseTransfer(
+            JSONObject(
+                authenticatedRequest(
+                    method = "POST",
+                    path = "/v1/transfers/" + transferId + "/complete",
+                    headers = mapOf(
+                        "Idempotency-Key" to
+                            "transfer-complete-" + transferId
+                    )
+                )
+            )
+        )
     }
 
     suspend fun listDevices(): List<PixelDevice> {
