@@ -3,49 +3,47 @@
 [English](README.md) · [Español](README.es.md)
 
 > **SEND IT. PICK IT UP ANYWHERE.**  
-> PIXEL GO is a cross-platform sharing system for moving **files, photos, links, text and clipboard content** between your own iPhone and Android devices — instantly, securely and natively.
+> PIXEL GO is a cross-device sharing system for moving **files, photos, links, text and clipboard content** between iPhone and Android — with two independent native clients and one compatibility contract.
 
 ![iOS](https://img.shields.io/badge/iOS-Swift_%7C_SwiftUI-000000?logo=apple&logoColor=white)
 ![Android](https://img.shields.io/badge/Android-Kotlin_%7C_Compose-3DDC84?logo=android&logoColor=white)
 ![Backend](https://img.shields.io/badge/Backend-Go-00ADD8?logo=go&logoColor=white)
-![PostgreSQL](https://img.shields.io/badge/PostgreSQL-Database-4169E1?logo=postgresql&logoColor=white)
+![PostgreSQL](https://img.shields.io/badge/PostgreSQL-Durable_State-4169E1?logo=postgresql&logoColor=white)
 ![Redis](https://img.shields.io/badge/Redis-Presence_%7C_Rate_Limits-DC382D?logo=redis&logoColor=white)
 ![OpenAPI](https://img.shields.io/badge/OpenAPI-Contract-6BA539?logo=openapiinitiative&logoColor=white)
-![CI](https://img.shields.io/badge/CI-GitHub_Actions-2088FF?logo=githubactions&logoColor=white)
+![CI](https://img.shields.io/badge/CI-iOS_%7C_Android_%7C_Go-2088FF?logo=githubactions&logoColor=white)
 
 ## The product
 
-AirDrop is excellent inside Apple's ecosystem. PIXEL GO explores the engineering problem that appears when the devices are **not** in the same ecosystem.
-
-A user signs in, registers their devices and can send something from one device to another:
+AirDrop is excellent when every device lives inside one ecosystem. PIXEL GO explores the engineering problem that appears when they do not.
 
 ```text
-iPhone                         Pixel
+iPhone                                      Pixel
 
-        PIXEL GO
-        Copy / Send
-           photo
-             ↓
-      encrypted transfer
-             ↓
-                               notification
-                                    ↓
-                               received ✓
+                PIXEL GO
+                Copy / Send
+                   photo
+                     ↓
+             signed upload URL
+                     ↓
+                 SHA-256
+                     ↓
+              transfer.ready
+                     ├──────── WebSocket ────────→
+                     └──────── push wake-up ────→
+                                                   ↓
+                                                download
+                                                   ↓
+                                             verify SHA-256
+                                                   ↓
+                                              Delivered ✓
 ```
 
-The visible product is intentionally small. The engineering underneath is not.
+The visible product is deliberately small. That leaves room to go deep on the engineering underneath: native lifecycle behavior, background work, retry safety, realtime delivery, binary transfer integrity, backwards-compatible contracts and CI/CD.
 
-PIXEL GO is designed around five ideas:
+## One product. Two native apps.
 
-- two genuinely native clients;
-- one versioned API contract;
-- explicit delivery state;
-- resilient background transfer;
-- CI/CD that proves compatibility instead of merely listing it as a skill.
-
-## Why two native clients?
-
-PIXEL GO deliberately does **not** share UI code.
+PIXEL GO intentionally shares **no UI implementation** between platforms.
 
 ```text
                          PIXEL GO API
@@ -57,60 +55,74 @@ PIXEL GO deliberately does **not** share UI code.
                   SwiftUI App     Compose App
 ```
 
-That makes platform differences part of the project rather than something hidden behind a cross-platform abstraction.
-
 | Concern | iOS | Android |
 |---|---|---|
 | Language | Swift | Kotlin |
 | UI | SwiftUI | Jetpack Compose |
 | Async | Swift Concurrency | Coroutines |
+| Networking | URLSession | native HTTP boundary |
 | Secure storage | Keychain | Android Keystore |
-| Push | APNs | FCM |
+| Push boundary | APNs | FCM |
 | Background work | BackgroundTasks | WorkManager |
-| Local persistence | Swift-native persistence boundary | Room boundary |
-| Lifecycle | iOS scene/app lifecycle | Android activity/process lifecycle |
+| Local persistence | native persistence boundary | Room boundary |
+| Lifecycle | app / scene lifecycle | activity / process lifecycle |
 
-**Same product. Two native implementations.**
+Both current app shells load registered devices and recent transfers from the **same Go API**, while remaining independently implemented.
 
 ## Transfer lifecycle
 
-The core happy path is intentionally explicit:
-
-```text
-sender
-  │
-  ├── POST /v1/transfers
-  │        ↓
-  │   upload authorization
-  │        ↓
-  ├── upload payload to object storage
-  │        ↓
-  │   POST /v1/transfers/{id}/uploaded
-  │        ↓
-backend emits transfer.ready
-  │
-  ├── WebSocket → destination when connected
-  └── push       → destination when sleeping/offline
-                           ↓
-                    destination downloads
-                           ↓
-                    checksum validation
-                           ↓
-              POST /v1/transfers/{id}/complete
-                           ↓
-                    transfer.completed
-                           ↓
-                      Delivered ✓
-```
-
-Transfers are modeled as a state machine instead of a single upload endpoint:
+Transfers are modeled as state, not as one giant upload request.
 
 ```text
 created → uploading → ready → downloading → completed
     └──────────────→ failed ←────────────────┘
 ```
 
-The contract is designed to support idempotency, retries and clients that may remain on older app versions.
+The current local end-to-end path is already executable:
+
+```text
+Register iPhone
+     ↓
+Register Android
+     ↓
+POST /v1/transfers
+     ↓
+receive expiring HMAC-signed upload URL
+     ↓
+PUT real payload bytes
+     ↓
+server verifies declared size + SHA-256
+     ↓
+POST /uploaded
+     ↓
+receive expiring signed download URL
+     ↓
+GET the same bytes
+     ↓
+verify SHA-256
+     ↓
+POST /complete
+     ↓
+Delivered ✓
+```
+
+For deterministic local development and CI, the payload adapter currently stores bytes in process memory behind signed URLs. The boundary is intentionally designed so production can replace that adapter with S3-compatible object storage without changing transfer-domain semantics.
+
+## Retry safety
+
+Mobile networks fail in ambiguous ways. A client can time out after the server successfully processed a request and have no idea whether retrying will duplicate the operation.
+
+PIXEL GO therefore implements `Idempotency-Key` handling for POST mutations.
+
+Current behavior:
+
+- same key + same request → replay the original response;
+- same key + different payload/path → `409 idempotency_key_reused`;
+- concurrent retries with the same key are **coalesced**, so only one mutation executes;
+- 5xx responses are not retained as successful idempotency records;
+- replayed responses expose `Idempotency-Replayed: true`.
+
+The current store is in-memory. A horizontally scaled production deployment should move idempotency records to Redis/PostgreSQL so they survive process restarts and coordinate across replicas.
 
 ## Architecture
 
@@ -123,7 +135,8 @@ flowchart LR
 
     API --> PG[(PostgreSQL)]
     API --> R[(Redis)]
-    API --> O[(Object Storage)]
+    API --> FS[Signed File Boundary]
+    FS --> O[(S3 / MinIO in production)]
     API --> W[Workers]
     W --> P[APNs / FCM]
     RT --> R
@@ -133,47 +146,34 @@ flowchart LR
     C -. contract .-> API
 ```
 
-### Backend shape
+### Why a modular monolith?
 
-PIXEL GO uses a **modular monolith** on purpose.
+PIXEL GO does not use fake microservices for portfolio optics.
 
 ```text
 server/
 ├── cmd/api/
 └── internal/
-    ├── auth/
     ├── devices/
     ├── transfers/
-    ├── presence/
-    ├── notifications/
     ├── files/
-    └── platform/
+    ├── realtime/
+    └── httpapi/
 ```
 
-The intended production infrastructure is:
+The production architecture is intended to add explicit modules for auth, notifications, presence and platform adapters while keeping one deployable backend until scale gives a concrete reason to extract something.
 
-- PostgreSQL for durable users, devices and transfer metadata;
-- Redis for presence, ephemeral delivery state and rate limiting;
-- S3-compatible object storage for payloads;
-- WebSockets for connected-device delivery;
-- APNs / FCM for sleeping devices;
-- background workers for fan-out, retries and cleanup;
-- signed URLs so application servers do not proxy large files;
-- JWT access tokens with refresh-token rotation;
-- idempotency keys for retry-safe writes;
-- structured logs, health checks and metrics.
-
-No fake fleet of microservices is required to demonstrate those boundaries.
+Natural future extraction points are realtime connection handling and asynchronous workers — not arbitrary domain nouns.
 
 ## Repository layout
 
 ```text
 pixelgo/
-├── ios/                         # Swift / SwiftUI client
-├── android/                     # Kotlin / Jetpack Compose client
+├── ios/                         # Swift / SwiftUI
+├── android/                     # Kotlin / Compose
 ├── server/                      # Go modular monolith
 ├── contracts/
-│   └── openapi.yaml             # Source-of-truth HTTP contract
+│   └── openapi.yaml             # Compatibility contract
 ├── infrastructure/
 │   ├── docker-compose.yml
 │   └── postgres/
@@ -190,14 +190,12 @@ pixelgo/
 
 ## API contract
 
-`contracts/openapi.yaml` is the compatibility boundary between the three independently deployed pieces of software.
+`contracts/openapi.yaml` is the compatibility boundary between software that does not deploy at the same speed.
 
-Core resources:
+Current public API foundation:
 
 ```text
-POST   /v1/auth/register
-POST   /v1/auth/login
-POST   /v1/auth/refresh
+GET    /health
 
 GET    /v1/devices
 POST   /v1/devices
@@ -209,216 +207,135 @@ GET    /v1/transfers/{transferId}
 POST   /v1/transfers/{transferId}/uploaded
 POST   /v1/transfers/{transferId}/complete
 
-GET    /v1/events
+GET    /v1/events                 # WebSocket upgrade
 ```
 
-A mobile API cannot assume every installed client updates immediately. Contract validation is therefore part of CI. An incompatible API change should fail before merge rather than break older phones in production.
+The development server also exposes signed `/dev-upload/{id}` and `/dev-download/{id}` routes as the local file adapter. Those are not intended to become the production file-storage API.
 
-## Native iOS client
+A mobile backend cannot assume every installed client updates immediately. CI therefore validates the OpenAPI structure and, on pull requests, runs a breaking-change check against the base contract.
 
-The iOS client is organized around SwiftUI + Swift Concurrency.
+## Native iOS
 
-Current foundation includes:
+The iOS implementation currently includes:
 
-- SwiftUI app shell and device/recent-transfer UI;
-- actor-based API client using `URLSession`;
-- Keychain token storage;
+- Swift 6 + SwiftUI;
+- actor-based `URLSession` API client;
+- real devices / recent transfers loaded from the API;
+- Keychain credential-storage boundary;
+- BackgroundTasks coordinator;
+- notification authorization boundary;
 - transfer domain models;
-- notification permission boundary;
-- BackgroundTasks registration point;
-- test target generated with XcodeGen.
+- XCTest decoding coverage;
+- reproducible Xcode project generation with XcodeGen;
+- Swift 6 concurrency isolation rather than disabling safety checks.
 
-The project definition lives in `ios/project.yml`, keeping the Xcode project reproducible instead of committing machine-specific project metadata.
+## Native Android
 
-## Native Android client
+The Android implementation currently includes:
 
-The Android client uses Kotlin + Jetpack Compose with platform-native infrastructure.
+- Kotlin + Jetpack Compose;
+- Coroutines;
+- real devices / recent transfers loaded from the same API;
+- Android Keystore encryption boundary;
+- WorkManager transfer-worker boundary;
+- Room entity/persistence boundary;
+- FCM dependency boundary;
+- JUnit foundation;
+- AndroidX explicitly configured in the build.
 
-Current foundation includes:
+The two clients agree on product semantics. They do not share UI source code.
 
-- Compose app shell and device/recent-transfer UI;
-- coroutine-based API boundary;
-- Android Keystore token encryption;
-- WorkManager transfer worker boundary;
-- Room-ready persistence module boundary;
-- FCM-ready messaging dependency;
-- JUnit foundation.
+## Signed transfer security
 
-The two apps may share API semantics. They do **not** share UI implementation.
+The local signed-URL implementation uses HMAC-SHA256 over action, transfer ID and expiry.
 
-## Presence and delivery
+A signed URL is scoped to:
 
-A registered device has a durable identity and ephemeral presence.
+- one transfer;
+- one action: upload or download;
+- a short expiration window.
 
-```text
-device registered
-      ↓
-WebSocket authenticated
-      ↓
-device.online
-      ↓
-heartbeat / reconnect
-      ↓
-device.offline
-```
+The local upload path additionally verifies:
 
-Presence is not treated as durable truth. PostgreSQL knows that a device exists; Redis can represent whether it appears reachable now.
+1. the transfer is still accepting an upload;
+2. byte count exactly matches declared `sizeBytes`;
+3. SHA-256 exactly matches transfer metadata.
 
-Delivery uses two paths:
+Only after a valid payload exists can the transfer transition to `ready`.
 
-1. WebSocket for an active connected app.
-2. Push notification as a wake-up signal when the destination is not actively connected.
-
-The push payload should carry transfer metadata, not the file itself.
-
-## Security model
-
-PIXEL GO treats transfer content and device credentials as sensitive.
-
-The architecture is built toward:
-
-- TLS everywhere;
-- short-lived access tokens;
-- rotating refresh tokens;
-- Keychain / Android Keystore for local credentials;
-- signed upload/download URLs;
-- SHA-256 payload integrity verification;
-- file-size and content-type limits;
-- rate limits per account/device/IP;
-- idempotency for transfer mutations;
-- object expiry and cleanup;
-- no credentials committed to source control.
+This is not end-to-end encryption yet. The current checksum proves payload integrity, while TLS protects transport. End-to-end content encryption remains a separate future security milestone.
 
 See [docs/SECURITY.md](docs/SECURITY.md).
 
 ## CI/CD
 
-Pull requests are intended to prove that the three implementations still agree:
+Every push / pull request validates the project as multiple independently built systems:
 
 ```text
-PR
- ↓
-Contract validation
- ↓
-┌─────────────────────────────────┐
-│                                 │
-iOS tests                     Android tests
-│                                 │
-Swift build                   Gradle build
-│                                 │
-└───────────────┬─────────────────┘
-                ↓
-           Backend tests
-                ↓
-        Integration checks
-                ↓
-      Contract breaking check
-                ↓
-        Docker image build
-                ↓
-          Security checks
-                ↓
-              PASS ✓
+                         PR / PUSH
+                             ↓
+                 OpenAPI structural validation
+                             ↓
+              ┌──────────────┼──────────────┐
+              ↓              ↓              ↓
+        SwiftUI tests    Compose tests     Go vet
+        iOS build        Android build     Go -race tests
+              │              │              ↓
+              │              │       binary E2E lifecycle
+              └──────────────┴──────────────┤
+                                             ↓
+                                      Docker image build
 ```
 
-Release flow is separated because backend and mobile have different deployment models:
+On pull requests, the contract job additionally checks for incompatible OpenAPI changes.
 
-```text
-main
- ↓
-backend image
- ↓
-staging
- ↓
-smoke tests
- ↓
-production
-```
+Release tags produce independent backend, Android and iOS artifacts. Store signing and real production deployment credentials are intentionally not fabricated in source control.
 
-```text
-release tag
-      ↓
- ┌────┴─────┐
- ↓          ↓
-iOS      Android
- ↓          ↓
-Archive   Bundle
- ↓          ↓
-TestFlight / Internal testing
-```
+## Tests that matter
 
-The repository contains workflow foundations under `.github/workflows/`. Store signing, App Store Connect and Play Console secrets are intentionally not fabricated.
+The project prioritizes product invariants over test-count vanity.
 
-## Testing strategy
+Implemented backend/E2E coverage now includes:
 
-The goal is not a huge count of trivial tests. The highest-value tests verify product invariants.
-
-### iOS
-
-- Swift Testing / XCTest;
-- API decoding;
-- repository behavior;
 - transfer state transitions;
-- UI smoke tests;
-- network mocks.
+- cannot complete before ready;
+- HMAC signed URL verification;
+- signed URL tamper rejection;
+- immutable payload storage semantics;
+- sequential idempotent replay;
+- conflicting idempotency-key reuse;
+- concurrent retry coalescing;
+- retry after server failure;
+- real upload of payload bytes;
+- upload byte-count validation boundary;
+- SHA-256 integrity validation;
+- real download of the same bytes;
+- final delivered state.
 
-### Android
-
-- JUnit;
-- coroutine/repository tests;
-- Compose UI tests;
-- WorkManager behavior;
-- network mocks.
-
-### Backend
-
-- unit tests;
-- transfer state machine tests;
-- HTTP integration tests;
-- auth tests;
-- rate-limiting tests;
-- WebSocket delivery tests;
-- upload lifecycle tests.
-
-### End-to-end target
-
-```text
-Create user
-   ↓
-Register iPhone
-   ↓
-Register Android
-   ↓
-Create transfer from iPhone
-   ↓
-Upload payload
-   ↓
-Receive Android event
-   ↓
-Download payload
-   ↓
-Validate checksum
-   ↓
-Mark delivered
-   ↓
-PASS
-```
+The E2E currently simulates the iPhone/Android roles through the HTTP API in CI; it does **not** claim physical-device automation yet.
 
 ## Local development
 
-Infrastructure services:
+Start optional infrastructure:
 
 ```bash
 docker compose -f infrastructure/docker-compose.yml up -d
 ```
 
-Backend:
+Run the backend:
 
 ```bash
 cd server
 cp .env.example .env
+go mod tidy
 go test ./...
 go run ./cmd/api
+```
+
+With the API running, exercise the real local transfer lifecycle:
+
+```bash
+python3 tests/e2e/transfer_flow.py
 ```
 
 iOS:
@@ -442,35 +359,38 @@ Full setup: [docs/LOCAL_DEVELOPMENT.md](docs/LOCAL_DEVELOPMENT.md).
 
 ## Current implementation
 
-This repository is being built as an engineering portfolio project, so implementation status is kept explicit.
-
-**Implemented foundation:**
+**Implemented now:**
 
 - versioned OpenAPI contract;
-- Go HTTP service with health, devices, transfer creation and transfer-state endpoints;
-- in-process realtime event hub with a WebSocket endpoint;
-- transfer state machine and checksum metadata;
-- SwiftUI native client foundation;
-- Compose native client foundation;
-- Keychain and Android Keystore secure-storage boundaries;
-- BackgroundTasks and WorkManager integration points;
+- native SwiftUI application foundation;
+- native Compose application foundation;
+- both clients reading the same backend state;
+- Go HTTP modular-monolith foundation;
+- explicit transfer state machine;
+- WebSocket realtime event hub;
+- HMAC-signed upload/download URLs with expiry;
+- real local binary upload/download path;
+- byte-count and SHA-256 validation;
+- retry-safe idempotency with concurrent coalescing;
+- Keychain / Android Keystore boundaries;
+- BackgroundTasks / WorkManager boundaries;
 - PostgreSQL schema;
 - local PostgreSQL + Redis + MinIO environment;
-- CI foundations for contract, backend, iOS and Android;
+- cross-platform CI;
+- real binary E2E lifecycle in CI;
+- release-artifact workflows;
 - bilingual engineering documentation.
 
-**Next production milestones:**
+**Still intentionally not claimed as complete:**
 
+- user authentication and refresh-token rotation;
 - PostgreSQL repositories wired into runtime;
-- Redis-backed distributed presence and rate limiting;
-- signed S3/MinIO upload and download URLs;
-- real APNs / FCM credentials and delivery adapters;
-- refresh-token rotation persistence;
-- generated Swift/Kotlin API clients from OpenAPI;
-- full device-to-device E2E test in CI;
-- App Store / Play internal distribution automation.
-
-Real cloud credentials, signing certificates and production endpoints are intentionally not committed.
+- Redis-backed distributed presence and idempotency;
+- production S3/MinIO signed-URL adapter;
+- real APNs / FCM delivery adapters;
+- generated Swift/Kotlin clients from OpenAPI;
+- physical iPhone → Android automated E2E;
+- App Store / Play internal distribution with real credentials.
 
 ## Engineering thesis
 
@@ -480,6 +400,6 @@ Its purpose is simple:
 
 > **Send something from one device to another.**
 
-That small surface makes room to go deep on the parts that are easy to fake in portfolio projects and difficult to execute well in real software: native platform behavior, backwards-compatible APIs, background execution, realtime delivery, secure storage, retries, CI/CD and end-to-end testing.
+That small product surface creates space to demonstrate the engineering details that are easy to list on a résumé and much harder to implement coherently: native platforms, background execution, compatibility contracts, retries, realtime delivery, binary integrity, secure storage boundaries, testing and CI/CD.
 
 **One product. Two native apps. One contract.**
