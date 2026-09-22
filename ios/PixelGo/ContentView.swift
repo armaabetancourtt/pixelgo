@@ -1,5 +1,6 @@
 import PhotosUI
 import SwiftUI
+import UIKit
 import UniformTypeIdentifiers
 
 struct ContentView: View {
@@ -168,7 +169,7 @@ private struct HomeView: View {
                     Section("INBOX") {
                         ForEach(model.receivedItems) { item in
                             VStack(alignment: .leading, spacing: 5) {
-                                Text(item.kind == .link ? "LINK" : "TEXT")
+                                Text(inboxLabel(for: item.kind))
                                     .font(.caption2)
                                     .fontWeight(.bold)
                                     .foregroundStyle(.secondary)
@@ -378,6 +379,19 @@ private struct SendView: View {
                     )
                 }
 
+                Section("CLIPBOARD") {
+                    Button {
+                        Task { await sendClipboard() }
+                    } label: {
+                        Label("Paste & send clipboard", systemImage: "doc.on.clipboard")
+                    }
+                    .disabled(selectedDeviceID.isEmpty || model.isLoading)
+
+                    Text("Clipboard text is sent as its own transfer type using the same signed delivery pipeline.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+
                 Section("PHOTO OR FILE") {
                     PhotosPicker(
                         selection: $selectedPhoto,
@@ -433,6 +447,27 @@ private struct SendView: View {
         }
     }
 
+    private func sendClipboard() async {
+        guard
+            let value = UIPasteboard.general.string?
+                .trimmingCharacters(in: .whitespacesAndNewlines),
+            !value.isEmpty
+        else {
+            model.errorMessage = "Clipboard does not contain text."
+            return
+        }
+
+        if await model.sendPayload(
+            Data(value.utf8),
+            kind: .clipboard,
+            displayName: "Clipboard",
+            contentType: "text/plain; charset=utf-8",
+            to: selectedDeviceID
+        ) {
+            dismiss()
+        }
+    }
+
     private func sendPhoto(_ item: PhotosPickerItem) async {
         do {
             guard let data = try await item.loadTransferable(type: Data.self) else {
@@ -483,6 +518,18 @@ private struct SendView: View {
         } catch {
             model.errorMessage = error.localizedDescription
         }
+    }
+}
+
+
+private func inboxLabel(for kind: Transfer.Kind) -> String {
+    switch kind {
+    case .link:
+        return "LINK"
+    case .clipboard:
+        return "CLIPBOARD"
+    default:
+        return "TEXT"
     }
 }
 
