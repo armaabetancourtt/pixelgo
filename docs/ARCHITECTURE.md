@@ -5,88 +5,181 @@ PIXEL GO is a modular monolith with two independently implemented native clients
 ## Principles
 
 1. Native clients own native UX and lifecycle behavior.
-2. The OpenAPI document is the compatibility boundary.
-3. Binary payloads bypass the application server whenever possible.
-4. Durable state and ephemeral presence are different data classes.
-5. Delivery is at-least-once at the event layer and idempotent at mutation boundaries.
-6. Mobile clients must tolerate server evolution and temporary offline periods.
+2. OpenAPI is the compatibility boundary.
+3. Authentication and authorization are separate concerns.
+4. Durable identity/state and ephemeral coordination use different stores.
+5. Binary payloads should bypass the application server in production.
+6. Event delivery may be at-least-once; mutations must be idempotent.
+7. Mobile clients must tolerate server evolution, offline periods and ambiguous retries.
 
-## Components
+## High-level topology
+
+~~~mermaid
+flowchart LR
+    IOS[iOS · SwiftUI] -->|JWT + REST| API[Go API]
+    AND[Android · Compose] -->|JWT + REST| API
+    IOS <--> |WebSocket| RT[Realtime Hub]
+    AND <--> |WebSocket| RT
+
+    API --> PG[(PostgreSQL)]
+    API --> REDIS[(Redis)]
+    API --> FILES[Signed File Boundary]
+    FILES --> OBJ[(S3 / MinIO adapter)]
+    RT <--> REDIS
+
+    CONTRACT[OpenAPI] -. compatibility .-> IOS
+    CONTRACT -. compatibility .-> AND
+    CONTRACT -. compatibility .-> API
+~~~
+
+## Native clients
 
 ### iOS
-SwiftUI renders the product. Swift Concurrency coordinates API work. Keychain stores session credentials. BackgroundTasks provides a scheduled recovery boundary. APNs will wake a sleeping client when realtime delivery is unavailable.
+
+SwiftUI owns presentation. Swift Concurrency coordinates networking. The API client is actor-isolated.
+
+Session credentials are encoded into Keychain. Concurrent 401 responses share one refresh Task so refresh rotation is not accidentally performed twice.
+
+BackgroundTasks and notification permission boundaries are native iOS concerns.
 
 ### Android
-Jetpack Compose renders the product. Coroutines coordinate API work. Android Keystore protects local credential material. WorkManager owns deferrable/retryable background work. FCM will provide wake-up notifications.
 
-### API
-The Go service owns authentication, device registration, transfer metadata and authorization decisions. It should not proxy large files through application memory.
+Jetpack Compose owns presentation. Coroutines coordinate networking.
 
-### PostgreSQL
-Runtime source of truth for registered devices and transfer metadata. The API can fall back to in-memory repositories when `DATABASE_URL` is absent, but CI runs against PostgreSQL and proves state survives a backend restart. The schema also reserves the user/auth boundary for the next milestone.
+The session is encrypted with AES-GCM and the key lives in Android Keystore. A coroutine Mutex coalesces refresh rotation after concurrent 401 responses.
 
-### Redis
-Runtime source of truth for ephemeral coordination when `REDIS_URL` is configured:
+WorkManager, Room and FCM remain Android-specific boundaries.
+
+## Authentication and authorization
+
+Register/login issue:
+
+- a 15-minute JWT access token;
+- a 30-day opaque refresh token.
+
+Refresh tokens are stored only as hashes and rotate on every use.
+
+The authenticated user ID is placed in request context. PostgreSQL and memory repositories scope device/transfer operations to that user whenever the context is authenticated.
+
+Transfer creation verifies both source and destination devices belong to the caller.
+
+See [AUTH.md](AUTH.md).
+
+## PostgreSQL
+
+PostgreSQL is the durable source of truth when DATABASE_URL is configured.
+
+It stores:
+
+- users;
+- bcrypt password hashes;
+- hashed refresh-token families;
+- devices;
+- transfer metadata and lifecycle state.
+
+CI starts a real PostgreSQL service and proves authenticated state survives an API process restart.
+
+The backend can use memory repositories when DATABASE_URL is absent for isolated local tests.
+
+## Redis
+
+Redis owns ephemeral/distributed coordination when REDIS_URL is configured:
 
 - device presence with TTL heartbeats;
 - Pub/Sub event fan-out across API replicas;
-- cross-replica idempotency locks + replay records;
-- shared fixed-window API rate limits.
+- idempotency locks + replay records;
+- shared fixed-window request limits.
 
-The application retains in-memory adapters for isolated local tests.
+The design intentionally uses different failure policies:
 
-### Object storage
-Payload bytes. Objects are addressed by opaque keys and accessed through short-lived signed URLs.
+- idempotency fails closed because duplicate writes risk consistency;
+- rate limiting fails open because it is an abuse-control layer.
 
-### Workers
-Push fan-out, retry queues, orphan cleanup, expiry and other work that should not block request latency.
+## File boundary
 
-## Request path
+The current local adapter creates expiring HMAC-signed upload/download capability URLs.
 
-```mermaid
+The upload path verifies exact byte count and SHA-256 before the transfer can become ready.
+
+The interface is intentionally isolated from the transfer domain so a direct S3-compatible adapter can replace it later.
+
+Signed URLs are transient credentials and are not stored in PostgreSQL.
+
+## Realtime path
+
+~~~text
+authenticated client
+      ↓
+owned deviceId
+      ↓
+WebSocket
+      ↓
+Redis presence TTL
+      ↓
+Redis Pub/Sub
+      ↓
+other API replicas
+      ↓
+connected destination client
+~~~
+
+A device registration is durable. Presence is an observation with expiry.
+
+## Transfer path
+
+~~~mermaid
 sequenceDiagram
     participant S as Sender
-    participant API as PIXEL GO API
-    participant OBJ as Object Storage
-    participant RT as Realtime/Push
+    participant API as API
+    participant F as File Boundary
+    participant R as Redis / Realtime
     participant D as Destination
 
-    S->>API: POST /v1/transfers
+    S->>API: POST /v1/transfers + Idempotency-Key
     API-->>S: transfer + signed upload URL
-    S->>OBJ: PUT payload
+    S->>F: PUT payload bytes
     S->>API: POST /uploaded
-    API->>RT: transfer.ready
-    RT-->>D: websocket event or push wake-up
-    D->>OBJ: GET payload
+    API->>R: transfer.ready
+    R-->>D: realtime event
+    D->>F: GET payload
     D->>D: verify SHA-256
     D->>API: POST /complete
-    API->>RT: transfer.completed
-    RT-->>S: Delivered ✓
-```
+    API->>R: transfer.completed
+    R-->>S: Delivered
+~~~
 
 ## State ownership
 
-```text
+~~~text
 PostgreSQL
-  ├── registered devices
-  └── transfer metadata / lifecycle
+  ├── users
+  ├── password hashes
+  ├── refresh-token families
+  ├── devices
+  └── transfer metadata
 
 Redis
   ├── presence TTL
   ├── realtime Pub/Sub
   ├── idempotency coordination
-  └── shared rate-limit counters
+  └── rate-limit counters
+
+Secure mobile storage
+  ├── iOS Keychain
+  └── Android Keystore-encrypted session
 
 File adapter
   └── payload bytes
-```
-
-Signed upload/download URLs are derived from transfer state and deliberately not persisted as durable credentials.
+~~~
 
 ## Scaling path
 
-The project starts as a modular monolith because domain boundaries can be explicit without paying distributed-system cost early.
+The modular monolith stays one deployable backend while domain boundaries remain explicit.
 
-If realtime connection volume later requires independent scaling, the realtime gateway is the first natural extraction point. Workers are another independent scaling boundary. The durable domain API can remain a monolith much longer.
+Natural extraction points, if measurement justifies them:
 
-That is a scaling path, not a requirement for the first release.
+1. realtime connection gateway;
+2. background workers;
+3. object-storage processing.
+
+Auth, devices and transfers do not need artificial microservices to demonstrate sound boundaries.
