@@ -1,6 +1,7 @@
 package files
 
 import (
+	"context"
 	"net/url"
 	"testing"
 	"time"
@@ -8,7 +9,11 @@ import (
 
 func TestSignedURLRoundTrip(t *testing.T) {
 	service := NewService("http://localhost:8080", "test-secret", time.Minute)
-	raw := service.UploadURL("tr_123")
+	raw, err := service.UploadURL(context.Background(), "tr_123", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	u, err := url.Parse(raw)
 	if err != nil {
@@ -27,7 +32,10 @@ func TestSignedURLRoundTrip(t *testing.T) {
 
 func TestSignedURLRejectsTampering(t *testing.T) {
 	service := NewService("http://localhost:8080", "test-secret", time.Minute)
-	raw := service.DownloadURL("tr_123")
+	raw, err := service.DownloadURL(context.Background(), "tr_123")
+	if err != nil {
+		t.Fatal(err)
+	}
 	u, err := url.Parse(raw)
 	if err != nil {
 		t.Fatal(err)
