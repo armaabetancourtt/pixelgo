@@ -9,8 +9,10 @@ permissions:
   contents: read
 
 concurrency:
-  group: ci-${{ github.ref }}
-  cancel-in-progress: true
+  # Push events can be delivered out of order. Keying by commit keeps an older
+  # delayed run from cancelling validation for a newer repository state.
+  group: ci-${{ github.workflow }}-${{ github.sha }}
+  cancel-in-progress: false
 
 jobs:
   contract:
