@@ -77,7 +77,8 @@ It stores:
 - bcrypt password hashes;
 - hashed refresh-token families;
 - devices;
-- transfer metadata and lifecycle state.
+- transfer metadata and lifecycle state;
+- durable notification outbox rows.
 
 CI starts a real PostgreSQL service and proves authenticated state survives an API process restart.
 
@@ -131,6 +132,34 @@ connected destination client
 
 A device registration is durable. Presence is an observation with expiry.
 
+## Push wake-up path
+
+Realtime remains the preferred delivery signal. Push exists to wake a destination that is not currently connected.
+
+~~~text
+transfer status update → ready
+          ↓
+PostgreSQL trigger
+          ↓
+notification_outbox
+          ↓
+worker claims rows with FOR UPDATE SKIP LOCKED
+          ↓
+Redis presence check
+     ↙           ↘
+ online         offline / unknown
+   ↓                 ↓
+skip push        APNs / FCM
+                      ↓
+                sent / retry
+~~~
+
+The outbox insert and transfer state transition share the PostgreSQL transaction, so a process crash after commit cannot lose the wake-up intent.
+
+The worker is safe to run on multiple replicas: claimed rows are locked durably, stale locks can be reclaimed, and provider failures use bounded exponential backoff. Online devices are intentionally marked delivered by the outbox worker without a provider call because their WebSocket connection already receives `transfer.ready`.
+
+Device-token rotation is independent from device registration through `PUT /v1/devices/{deviceId}/push-token`.
+
 ## Transfer path
 
 ~~~mermaid
@@ -163,8 +192,9 @@ PostgreSQL
   ├── users
   ├── password hashes
   ├── refresh-token families
-  ├── devices
-  └── transfer metadata
+  ├── devices + push tokens
+  ├── transfer metadata
+  └── notification outbox
 
 Redis
   ├── presence TTL
