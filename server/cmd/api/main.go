@@ -12,6 +12,8 @@ import (
 	"github.com/armaabetancourtt/pixelgo/server/internal/files"
 	"github.com/armaabetancourtt/pixelgo/server/internal/httpapi"
 	"github.com/armaabetancourtt/pixelgo/server/internal/platform/postgresdb"
+	"github.com/armaabetancourtt/pixelgo/server/internal/platform/redisdb"
+	"github.com/armaabetancourtt/pixelgo/server/internal/presence"
 	"github.com/armaabetancourtt/pixelgo/server/internal/realtime"
 	"github.com/armaabetancourtt/pixelgo/server/internal/transfers"
 )
@@ -47,11 +49,46 @@ func main() {
 		log.Printf("pixelgo persistence: in-memory")
 	}
 
-	hub := realtime.NewHub()
+	var presenceStore presence.Store = presence.NewMemoryStore()
+	var broker realtime.Broker
+
+	if redisURL := os.Getenv("REDIS_URL"); redisURL != "" {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+
+		redisClient, err := redisdb.Open(ctx, redisURL)
+		if err != nil {
+			log.Fatal(err)
+		}
+		defer redisClient.Close()
+
+		presenceStore = presence.NewRedisStore(redisClient)
+		broker = realtime.NewRedisBroker(redisClient)
+		log.Printf("pixelgo ephemeral state: redis")
+	} else {
+		log.Printf("pixelgo ephemeral state: in-memory")
+	}
+
+	hubOptions := []realtime.Option{
+		realtime.WithPresence(presenceStore),
+	}
+	if broker != nil {
+		hubOptions = append(hubOptions, realtime.WithBroker(broker))
+	}
+
+	hub := realtime.NewHub(hubOptions...)
+	hub.Start(context.Background())
+
 	fileService := files.NewService(baseURL, signingSecret, 10*time.Minute)
 	deviceService := devices.NewService(deviceRepo)
 	transferService := transfers.NewService(transferRepo, hub, fileService)
-	handler := httpapi.New(deviceService, transferService, hub, fileService)
+	handler := httpapi.New(
+		deviceService,
+		transferService,
+		hub,
+		fileService,
+		httpapi.WithPresence(presenceStore),
+	)
 
 	server := &http.Server{
 		Addr:              addr,
