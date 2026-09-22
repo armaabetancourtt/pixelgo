@@ -3,7 +3,8 @@ package com.armaabetancourtt.pixelgo.model
 data class PixelDevice(
     val id: String,
     val name: String,
-    val platform: String
+    val platform: String,
+    val online: Boolean
 )
 
 data class Transfer(
