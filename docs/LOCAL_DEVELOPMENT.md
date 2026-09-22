@@ -39,11 +39,14 @@ go test ./...
 go run ./cmd/api
 ~~~
 
-Health:
+Health and metrics:
 
 ~~~bash
-curl http://localhost:8080/health
+curl -i http://localhost:8080/health
+curl http://localhost:8080/metrics
 ~~~
+
+Every HTTP response includes `X-Request-ID`. Request logs are JSON structured. Set `PIXELGO_LOG_LEVEL=debug` for verbose local request logging.
 
 ### Authentication mode
 
@@ -54,6 +57,7 @@ To exercise the production-style path used by CI:
 ~~~bash
 export PIXELGO_REQUIRE_AUTH=true
 export PIXELGO_JWT_SECRET='local-development-secret-at-least-32-bytes'
+export PIXELGO_LOG_LEVEL='debug'
 
 export OBJECT_STORAGE_ENDPOINT='http://localhost:9000'
 export OBJECT_STORAGE_BUCKET='pixelgo'

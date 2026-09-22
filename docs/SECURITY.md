@@ -101,6 +101,20 @@ The repository intentionally contains no:
 
 Example local values are development-only.
 
+## Logging and operational telemetry
+
+Structured HTTP logs intentionally exclude:
+
+- Authorization headers;
+- refresh/access tokens;
+- request bodies;
+- file payloads;
+- signed object-storage URLs.
+
+Logs contain only operational metadata such as request ID, method, normalized route, status, duration and response byte count. Metric labels use normalized route templates rather than resource IDs to avoid accidental identifier leakage and unbounded cardinality.
+
+The `/metrics` endpoint is designed for private-network scraping. Production ingress should not expose it directly to the public internet.
+
 ## Remaining security milestones
 
 - production bucket policies / cloud IAM hardening;

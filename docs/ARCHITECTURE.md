@@ -38,7 +38,7 @@ flowchart LR
 
 ### iOS
 
-SwiftUI owns presentation. Swift Concurrency coordinates networking. The API client is actor-isolated.
+SwiftUI owns presentation. Swift Concurrency coordinates networking. Native PhotosPicker/fileImporter flows send photos and files, while an explicit clipboard action sends clipboard text as its own transfer kind. The API client is actor-isolated.
 
 Session credentials are encoded into Keychain. Concurrent 401 responses share one refresh Task so refresh rotation is not accidentally performed twice.
 
@@ -46,7 +46,7 @@ BackgroundTasks and notification permission boundaries are native iOS concerns.
 
 ### Android
 
-Jetpack Compose owns presentation. Coroutines coordinate networking.
+Jetpack Compose owns presentation. Coroutines coordinate networking. Native Photo Picker/document flows send binary payloads and a clipboard action uses the same transfer pipeline for clipboard text.
 
 The session is encrypted with AES-GCM and the key lives in Android Keystore. A coroutine Mutex coalesces refresh rotation after concurrent 401 responses.
 
@@ -180,6 +180,28 @@ Object storage
   ├── payload bytes
   └── signed checksum metadata
 ~~~
+
+## Observability
+
+Observability wraps the HTTP stack without changing domain services.
+
+~~~text
+HTTP request
+    ↓
+request ID
+    ↓
+auth / idempotency / rate limiting / handler
+    ↓
+status + bytes + latency
+    ├── structured JSON log
+    └── Prometheus metrics
+~~~
+
+The metrics registry exposes `GET /metrics` in OpenMetrics-compatible format. Route labels are normalized before recording, so resource IDs such as transfer/device IDs never become metric-label cardinality.
+
+The request logger records request ID, method, normalized route, status, duration and response byte count. It deliberately does not log Authorization headers or request bodies.
+
+The response-writer wrapper preserves flushing, hijacking and unwrapping behavior so the WebSocket endpoint continues to work through the same middleware.
 
 ## Scaling path
 

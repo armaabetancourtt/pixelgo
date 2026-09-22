@@ -280,6 +280,7 @@ Implementado:
 - sesión en Keychain;
 - devices/transfers/presence reales;
 - PhotosPicker + fileImporter nativos;
+- acción nativa Paste & Send Clipboard;
 - upload binario directo a S3/MinIO con presigned PUT;
 - download verificado y guardado local antes de marcar Delivered;
 - BackgroundTasks;
@@ -299,12 +300,26 @@ Implementado:
 - AES-GCM + Android Keystore;
 - devices/transfers/presence reales;
 - Photo Picker + document picker nativos;
+- acción nativa Paste & Send Clipboard;
 - upload binario directo a S3/MinIO con presigned PUT;
 - download verificado + guardado con Storage Access Framework antes de Delivered;
 - WorkManager;
 - Room boundary;
 - FCM boundary;
 - JUnit.
+
+## Observabilidad
+
+El backend expone señales operativas reales sin registrar cuerpos de requests ni credenciales Authorization.
+
+- logs JSON estructurados con Go `slog`;
+- `X-Request-ID` en cada respuesta HTTP;
+- Prometheus/OpenMetrics en `GET /metrics`;
+- request count, latencia, response bytes e in-flight requests;
+- labels de ruta normalizados como `/v1/transfers/{transferId}` para evitar cardinalidad por IDs;
+- tests que comprueban que un Bearer token no aparece en logs.
+
+`PIXELGO_LOG_LEVEL` soporta `debug`, `info`, `warn` y `error`.
 
 ## CI/CD
 
@@ -357,6 +372,9 @@ El E2E corre con auth obligatorio, PostgreSQL, Redis y MinIO reales, y prueba:
 - fallback signed in-memory local;
 - selección nativa de archivos/fotos en iOS y Android;
 - receive binario verificado + guardado local antes de Delivered;
+- clipboard cross-device explícito en ambos clientes nativos;
+- logs JSON estructurados + request IDs;
+- métricas Prometheus/OpenMetrics con labels de cardinalidad acotada;
 - retries cross-replica;
 - E2E autenticado;
 - CI multiplataforma;

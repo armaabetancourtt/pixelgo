@@ -78,7 +78,7 @@ PIXEL GO intentionally shares **no UI implementation** between platforms.
 | Local data boundary | native persistence boundary | Room |
 | Lifecycle | app / scene | activity / process |
 
-Both apps now implement native sign-in / account creation, restore encrypted sessions, register the current device, maintain realtime presence, and send/receive text or links through the signed transfer lifecycle. Access tokens refresh automatically without double-rotating refresh credentials.
+Both apps now implement native sign-in / account creation, restore encrypted sessions, register the current device, maintain realtime presence, and send/receive **text, links, clipboard content, photos and files** through the same signed transfer lifecycle. Incoming binary payloads are verified before the user saves them locally and the transfer is marked Delivered. Access tokens refresh automatically without double-rotating refresh credentials.
 
 **Same product semantics. Separate native codebases.**
 
@@ -342,6 +342,7 @@ Implemented:
 - Keychain session persistence;
 - live API devices / transfers / presence;
 - native PhotosPicker + fileImporter send flows;
+- explicit native Paste & Send Clipboard action;
 - direct binary upload to S3/MinIO through presigned PUT;
 - verified incoming file/photo download and local save before completion;
 - BackgroundTasks boundary;
@@ -362,6 +363,7 @@ Implemented:
 - AES-GCM session encryption using Android Keystore;
 - live API devices / transfers / presence;
 - native Photo Picker + document picker send flows;
+- explicit native Paste & Send Clipboard action;
 - direct binary upload to S3/MinIO through presigned PUT;
 - verified incoming file/photo download and Storage Access Framework save before completion;
 - WorkManager boundary;
@@ -369,6 +371,19 @@ Implemented:
 - FCM dependency boundary;
 - JUnit;
 - AndroidX build configuration.
+
+## Observability
+
+The backend exposes production-style operational signals without logging request bodies or authorization credentials.
+
+- JSON structured logs via Go `slog`;
+- `X-Request-ID` on every HTTP response;
+- Prometheus/OpenMetrics at `GET /metrics`;
+- request count, latency, response bytes and in-flight gauges;
+- normalized route labels such as `/v1/transfers/{transferId}` to avoid high-cardinality resource IDs;
+- explicit tests that ensure Bearer credentials never appear in request logs.
+
+`PIXELGO_LOG_LEVEL` supports `debug`, `info`, `warn` and `error`.
 
 ## Security boundaries
 
@@ -469,6 +484,7 @@ Then run:
 
 ```bash
 python3 tests/e2e/transfer_flow.py
+curl http://localhost:8080/metrics
 ```
 
 iOS:
@@ -511,6 +527,9 @@ Full setup: [docs/LOCAL_DEVELOPMENT.md](docs/LOCAL_DEVELOPMENT.md).
 - local in-memory signed adapter fallback;
 - native file/photo selection on iOS and Android;
 - verified binary receive + explicit local save before Delivered;
+- explicit cross-device clipboard transfers on both native clients;
+- structured JSON request logs + request IDs;
+- Prometheus/OpenMetrics HTTP metrics with bounded-cardinality labels;
 - cross-replica retry safety;
 - authenticated E2E lifecycle;
 - cross-platform CI;
