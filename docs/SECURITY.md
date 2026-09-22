@@ -23,17 +23,25 @@ PIXEL GO handles personal files and device credentials, so security boundaries a
 
 - TLS is required outside local development.
 - Local cleartext networking exists only for emulator/simulator development.
-- WebSocket authentication uses the same account/device authorization model as REST.
+- WebSocket connections currently identify a registered-device ID for presence; authenticated device authorization is part of the auth milestone.
 
-## Abuse controls
+## Retry and abuse controls
 
-Production milestones include:
+Implemented now:
 
-- per-account and per-device rate limits;
-- IP-aware abuse limits;
+- POST mutations support idempotency keys;
+- Redis-backed idempotency coordinates concurrent retries across API replicas;
+- a reused key with a different request is rejected;
+- 5xx results are not cached as successful mutations;
+- configured Redis idempotency fails closed if coordination is unavailable;
+- Redis-backed fixed-window limits share request budgets across replicas;
+- rate-limit responses include `429`, `Retry-After`, `RateLimit-Limit` and `RateLimit-Remaining`;
+- rate limiting fails open if Redis is unavailable because it is an abuse-control layer rather than a write-consistency boundary.
+
+Still planned:
+
+- authenticated per-account / per-device budgets;
 - upload quotas;
-- maximum payload sizes;
-- idempotency-key replay handling;
 - structured security events.
 
 ## Secret handling
