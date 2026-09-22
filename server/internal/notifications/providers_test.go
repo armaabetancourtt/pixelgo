@@ -177,7 +177,11 @@ func TestFCMProviderExchangesOAuthAndSendsHTTPv1Message(t *testing.T) {
 			_, _ = w.Write([]byte("{\"access_token\":\"access-token\",\"expires_in\":3600}"))
 
 		case "/v1/projects/project-123/messages:send":
-			messageCalls.Add(1)
+			call := messageCalls.Add(1)
+			expectedTransferID := "tr_2"
+			if call == 2 {
+				expectedTransferID = "tr_3"
+			}
 			if got := r.Header.Get("Authorization"); got != "Bearer access-token" {
 				t.Errorf("unexpected FCM authorization %q", got)
 			}
@@ -191,12 +195,20 @@ func TestFCMProviderExchangesOAuthAndSendsHTTPv1Message(t *testing.T) {
 				t.Errorf("unexpected FCM device token %q", got)
 			}
 			data, _ := message["data"].(map[string]any)
-			if got, _ := data["transferId"].(string); got != "tr_2" {
-				t.Errorf("unexpected FCM transfer id %q", got)
+			if got, _ := data["transferId"].(string); got != expectedTransferID {
+				t.Errorf(
+					"unexpected FCM transfer id %q, want %q",
+					got,
+					expectedTransferID,
+				)
 			}
 			android, _ := message["android"].(map[string]any)
-			if got, _ := android["collapse_key"].(string); got != "tr_2" {
-				t.Errorf("unexpected FCM collapse key %q", got)
+			if got, _ := android["collapse_key"].(string); got != expectedTransferID {
+				t.Errorf(
+					"unexpected FCM collapse key %q, want %q",
+					got,
+					expectedTransferID,
+				)
 			}
 
 			w.Header().Set("Content-Type", "application/json")
