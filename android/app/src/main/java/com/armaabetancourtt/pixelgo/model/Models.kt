@@ -16,8 +16,20 @@ data class PixelDevice(
 
 data class Transfer(
     val id: String,
+    val sourceDeviceId: String,
+    val destinationDeviceId: String,
     val kind: String,
     val status: String,
     val displayName: String?,
-    val sizeBytes: Long
+    val contentType: String?,
+    val sizeBytes: Long,
+    val sha256: String,
+    val uploadUrl: String?,
+    val downloadUrl: String?
+)
+
+data class ReceivedTextItem(
+    val id: String,
+    val kind: String,
+    val text: String
 )
