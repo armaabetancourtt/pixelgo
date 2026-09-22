@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/armaabetancourtt/pixelgo/server/internal/auth"
 	"github.com/armaabetancourtt/pixelgo/server/internal/devices"
 	"github.com/armaabetancourtt/pixelgo/server/internal/files"
 	"github.com/armaabetancourtt/pixelgo/server/internal/httpapi"
@@ -23,7 +24,10 @@ func main() {
 	addr := env("PIXELGO_ADDR", ":8080")
 	baseURL := env("PIXELGO_PUBLIC_BASE_URL", "http://localhost:8080")
 	signingSecret := env("PIXELGO_SIGNING_SECRET", "pixelgo-local-signing-secret-change-me")
+	jwtSecret := env("PIXELGO_JWT_SECRET", "pixelgo-local-jwt-secret-change-me-32")
+	requireAuth := envBool("PIXELGO_REQUIRE_AUTH", false)
 
+	var authRepo auth.Repository = auth.NewMemoryRepository()
 	var deviceRepo devices.Repository = devices.NewMemoryRepository()
 	var transferRepo transfers.Repository = transfers.NewMemoryRepository()
 
@@ -43,6 +47,7 @@ func main() {
 			}
 		}
 
+		authRepo = auth.NewPostgresRepository(pool)
 		deviceRepo = devices.NewPostgresRepository(pool)
 		transferRepo = transfers.NewPostgresRepository(pool)
 		log.Printf("pixelgo persistence: postgres")
@@ -53,7 +58,7 @@ func main() {
 	var presenceStore presence.Store = presence.NewMemoryStore()
 	var requestLimiter ratelimit.Limiter = ratelimit.NewMemoryLimiter()
 	var broker realtime.Broker
-	httpOptions := make([]httpapi.Option, 0, 3)
+	httpOptions := make([]httpapi.Option, 0, 4)
 
 	if redisURL := os.Getenv("REDIS_URL"); redisURL != "" {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -85,12 +90,14 @@ func main() {
 	hub.Start(context.Background())
 
 	fileService := files.NewService(baseURL, signingSecret, 10*time.Minute)
+	authService := auth.NewService(authRepo, []byte(jwtSecret))
 	deviceService := devices.NewService(deviceRepo)
 	transferService := transfers.NewService(transferRepo, hub, fileService)
 	httpOptions = append(
 		httpOptions,
 		httpapi.WithPresence(presenceStore),
 		httpapi.WithRateLimiter(requestLimiter),
+		httpapi.WithAuth(authService, requireAuth),
 	)
 	handler := httpapi.New(
 		deviceService,
