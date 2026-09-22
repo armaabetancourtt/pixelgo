@@ -96,7 +96,7 @@ CREATE INDEX IF NOT EXISTS notification_outbox_pending_idx
   WHERE sent_at IS NULL AND failed_at IS NULL;
 
 CREATE OR REPLACE FUNCTION pixelgo_enqueue_transfer_ready_notification()
-RETURNS trigger AS $
+RETURNS trigger AS $$
 BEGIN
   IF NEW.status = 'ready'::transfer_status
      AND OLD.status IS DISTINCT FROM NEW.status THEN
@@ -124,7 +124,7 @@ BEGIN
 
   RETURN NEW;
 END;
-$ LANGUAGE plpgsql;
+$$ LANGUAGE plpgsql;
 
 DROP TRIGGER IF EXISTS transfers_ready_notification_outbox ON transfers;
 
