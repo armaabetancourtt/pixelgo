@@ -50,6 +50,12 @@ func WithAuth(service *auth.Service, required bool) Option {
 	}
 }
 
+func WithMetrics(handler http.Handler) Option {
+	return func(s *Server) {
+		s.metrics = handler
+	}
+}
+
 type Server struct {
 	devices   *devices.Service
 	transfers *transfers.Service
@@ -58,8 +64,9 @@ type Server struct {
 	presence         presence.Store
 	idempotencyRedis *redis.Client
 	rateLimiter      ratelimit.Limiter
-	auth      *auth.Service
+	auth             *auth.Service
 	authRequired     bool
+	metrics          http.Handler
 }
 
 func New(
@@ -81,6 +88,9 @@ func New(
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health", s.health)
+	if s.metrics != nil {
+		mux.Handle("GET /metrics", s.metrics)
+	}
 	if s.auth != nil {
 		mux.HandleFunc("POST /v1/auth/register", s.authRegister)
 		mux.HandleFunc("POST /v1/auth/login", s.authLogin)
