@@ -114,10 +114,26 @@ actor APIClient {
         sourceDeviceID: String,
         destinationDeviceID: String
     ) async throws -> Transfer {
-        let payload = Data(text.utf8)
         let kind = inferredTextKind(text)
+        return try await sendPayload(
+            Data(text.utf8),
+            kind: kind,
+            displayName: kind == .link ? "Link" : "Text",
+            contentType: "text/plain; charset=utf-8",
+            sourceDeviceID: sourceDeviceID,
+            destinationDeviceID: destinationDeviceID
+        )
+    }
+
+    func sendPayload(
+        _ payload: Data,
+        kind: Transfer.Kind,
+        displayName: String,
+        contentType: String,
+        sourceDeviceID: String,
+        destinationDeviceID: String
+    ) async throws -> Transfer {
         let checksum = sha256Hex(payload)
-        let contentType = "text/plain; charset=utf-8"
 
         let created: Transfer = try await authenticatedPost(
             "/v1/transfers",
@@ -125,8 +141,8 @@ actor APIClient {
                 sourceDeviceId: sourceDeviceID,
                 destinationDeviceId: destinationDeviceID,
                 kind: kind.rawValue,
-                displayName: kind == .link ? "Link" : "Text",
-                contentType: contentType,
+                displayName: String(displayName.prefix(255)),
+                contentType: String(contentType.prefix(255)),
                 sizeBytes: Int64(payload.count),
                 sha256: checksum
             ),
@@ -136,6 +152,7 @@ actor APIClient {
         guard let uploadURL = created.uploadUrl else {
             throw APIError.invalidResponse
         }
+
         try await upload(
             payload,
             to: uploadURL,
@@ -143,11 +160,10 @@ actor APIClient {
             sha256: checksum
         )
 
-        let ready: Transfer = try await authenticatedMutation(
+        return try await authenticatedMutation(
             "/v1/transfers/\(created.id)/uploaded",
             idempotencyKey: "transfer-uploaded-\(created.id)"
         )
-        return ready
     }
 
     func receiveReadyTextItems(
