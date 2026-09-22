@@ -5,6 +5,7 @@ import UserNotifications
 
 @main
 struct PixelGoApp: App {
+    @UIApplicationDelegateAdaptor(PushAppDelegate.self) private var appDelegate
     @StateObject private var model = AppModel()
 
     init() {
@@ -23,8 +24,14 @@ struct PixelGoApp: App {
     }
 
     private func requestNotifications() async {
-        _ = try? await UNUserNotificationCenter.current()
-            .requestAuthorization(options: [.alert, .badge, .sound])
+        let granted = (try? await UNUserNotificationCenter.current()
+            .requestAuthorization(options: [.alert, .badge, .sound])) ?? false
+
+        if granted {
+            await MainActor.run {
+                UIApplication.shared.registerForRemoteNotifications()
+            }
+        }
     }
 }
 
@@ -42,6 +49,7 @@ final class AppModel: ObservableObject {
 
     private let api: APIClient
     private var realtimeTask: Task<Void, Never>?
+    private var pushTokenTask: Task<Void, Never>?
 
     init() {
         let sessionStore = SessionStore()
@@ -49,6 +57,14 @@ final class AppModel: ObservableObject {
             baseURL: URL(string: "http://localhost:8080")!,
             sessionStore: sessionStore
         )
+
+        self.pushTokenTask = Task { [weak self] in
+            let stream = await PushTokenBroker.shared.stream()
+            for await token in stream {
+                guard !Task.isCancelled else { break }
+                await self?.syncPushToken(token)
+            }
+        }
     }
 
     func bootstrap() async {
@@ -235,6 +251,10 @@ final class AppModel: ObservableObject {
             )
             localDeviceID = device.id
 
+            if let token = await PushTokenBroker.shared.current() {
+                await syncPushToken(token)
+            }
+
             // Durable state is the recovery path if realtime was missed while
             // the app was suspended or offline.
             await receivePendingItems()
@@ -246,6 +266,25 @@ final class AppModel: ObservableObject {
             errorMessage = "Your session expired. Sign in again."
         } catch APIClient.APIError.noSession {
             await signOut()
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    private func syncPushToken(_ token: String) async {
+        guard
+            isAuthenticated,
+            let deviceID = localDeviceID,
+            !token.isEmpty
+        else {
+            return
+        }
+
+        do {
+            _ = try await api.updatePushToken(token, deviceID: deviceID)
+        } catch APIClient.APIError.refreshFailed {
+            await signOut()
+            errorMessage = "Your session expired. Sign in again."
         } catch {
             errorMessage = error.localizedDescription
         }
