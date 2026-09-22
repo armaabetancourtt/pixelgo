@@ -8,6 +8,11 @@ struct PixelDevice: Codable, Identifiable, Hashable {
     let createdAt: Date
 }
 
+struct DevicePresence: Codable, Hashable {
+    let deviceId: String
+    let online: Bool
+}
+
 struct Transfer: Codable, Identifiable, Hashable {
     enum Kind: String, Codable { case file, photo, link, text, clipboard }
     enum Status: String, Codable { case created, uploading, ready, downloading, completed, failed }
