@@ -16,20 +16,29 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.Button
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import com.armaabetancourtt.pixelgo.model.PixelDevice
 import com.armaabetancourtt.pixelgo.model.Transfer
 import com.armaabetancourtt.pixelgo.network.ApiClient
+import com.armaabetancourtt.pixelgo.network.SessionExpiredException
+import com.armaabetancourtt.pixelgo.network.SessionRequiredException
+import com.armaabetancourtt.pixelgo.security.SecureTokenStore
+import kotlinx.coroutines.launch
 import kotlin.math.roundToInt
 
 class MainActivity : ComponentActivity() {
@@ -38,7 +47,7 @@ class MainActivity : ComponentActivity() {
         setContent {
             MaterialTheme {
                 Surface(modifier = Modifier.fillMaxSize()) {
-                    PixelGoHome()
+                    PixelGoRoot()
                 }
             }
         }
@@ -46,8 +55,151 @@ class MainActivity : ComponentActivity() {
 }
 
 @Composable
-private fun PixelGoHome() {
-    val api = remember { ApiClient(BuildConfig.API_BASE_URL) }
+private fun PixelGoRoot() {
+    val context = LocalContext.current.applicationContext
+    val tokenStore = remember { SecureTokenStore(context) }
+    val api = remember { ApiClient(BuildConfig.API_BASE_URL, tokenStore) }
+    var authenticated by remember { mutableStateOf(api.hasStoredSession()) }
+
+    if (authenticated) {
+        PixelGoHome(
+            api = api,
+            onSignOut = {
+                api.signOut()
+                authenticated = false
+            },
+            onSessionExpired = {
+                api.signOut()
+                authenticated = false
+            }
+        )
+    } else {
+        AuthScreen(
+            api = api,
+            onAuthenticated = { authenticated = true }
+        )
+    }
+}
+
+@Composable
+private fun AuthScreen(
+    api: ApiClient,
+    onAuthenticated: () -> Unit
+) {
+    val scope = rememberCoroutineScope()
+    var email by remember { mutableStateOf("") }
+    var password by remember { mutableStateOf("") }
+    var createAccount by remember { mutableStateOf(false) }
+    var loading by remember { mutableStateOf(false) }
+    var error by remember { mutableStateOf<String?>(null) }
+
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(28.dp),
+        verticalArrangement = Arrangement.Center
+    ) {
+        Text(
+            "PIXEL GO",
+            style = MaterialTheme.typography.headlineLarge,
+            fontWeight = FontWeight.Black
+        )
+        Text(
+            "Your devices. One private transfer space.",
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+
+        Spacer(Modifier.height(24.dp))
+
+        OutlinedTextField(
+            value = email,
+            onValueChange = { email = it },
+            label = { Text("Email") },
+            singleLine = true,
+            modifier = Modifier.fillMaxWidth()
+        )
+
+        Spacer(Modifier.height(12.dp))
+
+        OutlinedTextField(
+            value = password,
+            onValueChange = { password = it },
+            label = { Text("Password") },
+            singleLine = true,
+            visualTransformation = PasswordVisualTransformation(),
+            modifier = Modifier.fillMaxWidth()
+        )
+
+        Spacer(Modifier.height(18.dp))
+
+        Button(
+            onClick = {
+                scope.launch {
+                    loading = true
+                    error = null
+
+                    runCatching {
+                        if (createAccount) {
+                            api.register(email, password)
+                        } else {
+                            api.login(email, password)
+                        }
+                    }.fold(
+                        onSuccess = { onAuthenticated() },
+                        onFailure = {
+                            error = it.message ?: "Authentication failed."
+                        }
+                    )
+                    loading = false
+                }
+            },
+            enabled = email.isNotBlank() &&
+                password.isNotBlank() &&
+                !loading,
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Text(
+                when {
+                    loading -> "CONNECTING…"
+                    createAccount -> "CREATE ACCOUNT"
+                    else -> "SIGN IN"
+                }
+            )
+        }
+
+        TextButton(
+            onClick = {
+                createAccount = !createAccount
+                error = null
+            },
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Text(
+                if (createAccount) {
+                    "Already have an account? Sign in"
+                } else {
+                    "New to PIXEL GO? Create account"
+                }
+            )
+        }
+
+        error?.let {
+            Spacer(Modifier.height(8.dp))
+            Text(
+                it,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+    }
+}
+
+@Composable
+private fun PixelGoHome(
+    api: ApiClient,
+    onSignOut: () -> Unit,
+    onSessionExpired: () -> Unit
+) {
     var status by remember { mutableStateOf("Connecting…") }
     var devices by remember { mutableStateOf<List<PixelDevice>>(emptyList()) }
     var transfers by remember { mutableStateOf<List<Transfer>>(emptyList()) }
@@ -67,14 +219,19 @@ private fun PixelGoHome() {
                         online += device.id
                     }
                 } catch (_: Exception) {
-                    // Presence is ephemeral; a temporary lookup failure should
-                    // not prevent the durable device list from rendering.
+                    // Presence is ephemeral. Durable data should still render.
                 }
             }
             onlineDeviceIds = online
         }.fold(
             onSuccess = { status = "API online" },
-            onFailure = { status = "Local API unavailable" }
+            onFailure = { error ->
+                when (error) {
+                    is SessionExpiredException,
+                    is SessionRequiredException -> onSessionExpired()
+                    else -> status = "API unavailable"
+                }
+            }
         )
     }
 
@@ -86,15 +243,27 @@ private fun PixelGoHome() {
     ) {
         item {
             Spacer(Modifier.height(28.dp))
-            Text(
-                "PIXEL GO",
-                style = MaterialTheme.typography.headlineLarge,
-                fontWeight = FontWeight.Black
-            )
-            Text(
-                "Native cross-device sharing.",
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Column {
+                    Text(
+                        "PIXEL GO",
+                        style = MaterialTheme.typography.headlineLarge,
+                        fontWeight = FontWeight.Black
+                    )
+                    Text(
+                        "Native cross-device sharing.",
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+
+                TextButton(onClick = onSignOut) {
+                    Text("Sign out")
+                }
+            }
+
             Spacer(Modifier.height(8.dp))
             Text(
                 status,
@@ -157,7 +326,8 @@ private fun PixelGoHome() {
         } else {
             items(transfers, key = { it.id }) { transfer ->
                 TransferRow(
-                    title = transfer.displayName ?: transfer.kind.replaceFirstChar { it.uppercase() },
+                    title = transfer.displayName
+                        ?: transfer.kind.replaceFirstChar { it.uppercase() },
                     detail = "${formatBytes(transfer.sizeBytes)} · ${transfer.status}"
                 )
             }
@@ -192,7 +362,9 @@ private fun TransferRow(title: String, detail: String) {
 private fun formatBytes(bytes: Long): String {
     if (bytes < 1_024) return "$bytes B"
     val kilobytes = bytes / 1_024.0
-    if (kilobytes < 1_024) return "${(kilobytes * 10).roundToInt() / 10.0} KB"
+    if (kilobytes < 1_024) {
+        return "${(kilobytes * 10).roundToInt() / 10.0} KB"
+    }
     val megabytes = kilobytes / 1_024.0
     return "${(megabytes * 10).roundToInt() / 10.0} MB"
 }
