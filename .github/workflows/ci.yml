@@ -152,6 +152,9 @@ jobs:
             http://127.0.0.1:8080/health >/dev/null
           grep -qi '^X-Request-ID:' /tmp/health-headers.txt
 
+          curl --fail --silent http://127.0.0.1:8080/ready \
+            | grep -q '"status":"ready"'
+
           python3 ../tests/e2e/transfer_flow.py
 
           curl --fail --silent http://127.0.0.1:8080/metrics \

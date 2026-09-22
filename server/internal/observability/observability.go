@@ -167,7 +167,7 @@ func Middleware(
 
 func normalizedRoute(path string) string {
 	switch path {
-	case "/health", "/metrics",
+	case "/health", "/ready", "/metrics",
 		"/v1/auth/register", "/v1/auth/login", "/v1/auth/refresh",
 		"/v1/devices", "/v1/transfers", "/v1/events":
 		return path

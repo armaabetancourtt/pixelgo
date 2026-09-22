@@ -38,6 +38,7 @@ func main() {
 	var authRepo auth.Repository = auth.NewMemoryRepository()
 	var deviceRepo devices.Repository = devices.NewMemoryRepository()
 	var transferRepo transfers.Repository = transfers.NewMemoryRepository()
+	readinessChecks := make([]observability.Check, 0, 3)
 
 	if databaseURL := os.Getenv("DATABASE_URL"); databaseURL != "" {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -58,6 +59,10 @@ func main() {
 		authRepo = auth.NewPostgresRepository(pool)
 		deviceRepo = devices.NewPostgresRepository(pool)
 		transferRepo = transfers.NewPostgresRepository(pool)
+		readinessChecks = append(
+			readinessChecks,
+			observability.Check{Name: "postgres", Run: pool.Ping},
+		)
 		logger.Info("persistence configured", "adapter", "postgres")
 	} else {
 		logger.Info("persistence configured", "adapter", "in-memory")
@@ -81,6 +86,15 @@ func main() {
 		presenceStore = presence.NewRedisStore(redisClient)
 		requestLimiter = ratelimit.NewRedisLimiter(redisClient)
 		broker = realtime.NewRedisBroker(redisClient)
+		readinessChecks = append(
+			readinessChecks,
+			observability.Check{
+				Name: "redis",
+				Run: func(ctx context.Context) error {
+					return redisClient.Ping(ctx).Err()
+				},
+			},
+		)
 		httpOptions = append(httpOptions, httpapi.WithRedisIdempotency(redisClient))
 		logger.Info("ephemeral state configured", "adapter", "redis")
 	} else {
@@ -116,11 +130,23 @@ func main() {
 			fatal(logger, "startup failed", "error", err)
 		}
 		fileService = storage
+		readinessChecks = append(
+			readinessChecks,
+			observability.Check{
+				Name: "object_storage",
+				Run:  fileService.Health,
+			},
+		)
 		logger.Info("payload storage configured", "adapter", "s3-compatible")
 	} else {
 		fileService = files.NewService(baseURL, signingSecret, 10*time.Minute)
 		logger.Info("payload storage configured", "adapter", "in-memory-development")
 	}
+
+	readinessHandler := observability.ReadinessHandler(
+		readinessChecks,
+		2*time.Second,
+	)
 
 	authService := auth.NewService(authRepo, []byte(jwtSecret))
 	deviceService := devices.NewService(deviceRepo)
@@ -131,6 +157,7 @@ func main() {
 		httpapi.WithRateLimiter(requestLimiter),
 		httpapi.WithAuth(authService, requireAuth),
 		httpapi.WithMetrics(metrics.Handler()),
+		httpapi.WithReadiness(readinessHandler),
 	)
 	handler := observability.Middleware(
 		httpapi.New(
@@ -155,6 +182,7 @@ func main() {
 		"pixelgo api listening",
 		"addr", addr,
 		"auth_required", requireAuth,
+		"readiness_checks", len(readinessChecks),
 	)
 	if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		fatal(logger, "api server stopped unexpectedly", "error", err)

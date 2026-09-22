@@ -34,7 +34,7 @@ func withAuthentication(next http.Handler, service *auth.Service) http.Handler {
 
 func publicWithoutBearer(path string) bool {
 	switch path {
-	case "/health", "/metrics", "/v1/auth/register", "/v1/auth/login", "/v1/auth/refresh":
+	case "/health", "/ready", "/metrics", "/v1/auth/register", "/v1/auth/login", "/v1/auth/refresh":
 		return true
 	}
 	return strings.HasPrefix(path, "/dev-upload/") ||

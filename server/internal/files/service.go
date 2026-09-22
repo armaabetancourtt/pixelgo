@@ -111,6 +111,21 @@ func (s *Service) IsLocal() bool {
 	return s.s3 == nil
 }
 
+func (s *Service) Health(ctx context.Context) error {
+	if s.s3 == nil {
+		return nil
+	}
+
+	exists, err := s.s3.BucketExists(ctx, s.bucket)
+	if err != nil {
+		return fmt.Errorf("check object storage health: %w", err)
+	}
+	if !exists {
+		return fmt.Errorf("object storage bucket %q is unavailable", s.bucket)
+	}
+	return nil
+}
+
 func (s *Service) UploadURL(
 	ctx context.Context,
 	transferID,

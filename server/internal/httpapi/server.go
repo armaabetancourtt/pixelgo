@@ -56,6 +56,12 @@ func WithMetrics(handler http.Handler) Option {
 	}
 }
 
+func WithReadiness(handler http.Handler) Option {
+	return func(s *Server) {
+		s.readiness = handler
+	}
+}
+
 type Server struct {
 	devices   *devices.Service
 	transfers *transfers.Service
@@ -67,6 +73,7 @@ type Server struct {
 	auth             *auth.Service
 	authRequired     bool
 	metrics          http.Handler
+	readiness        http.Handler
 }
 
 func New(
@@ -90,6 +97,9 @@ func New(
 	mux.HandleFunc("GET /health", s.health)
 	if s.metrics != nil {
 		mux.Handle("GET /metrics", s.metrics)
+	}
+	if s.readiness != nil {
+		mux.Handle("GET /ready", s.readiness)
 	}
 	if s.auth != nil {
 		mux.HandleFunc("POST /v1/auth/register", s.authRegister)
