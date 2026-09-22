@@ -67,7 +67,7 @@ PIXEL GO intentionally shares **no UI implementation** between platforms.
 | Local persistence | native persistence boundary | Room boundary |
 | Lifecycle | app / scene lifecycle | activity / process lifecycle |
 
-Both current app shells load registered devices and recent transfers from the **same Go API**, while remaining independently implemented.
+Both current app shells load registered devices, recent transfers and **Redis-backed Online / Offline presence** from the same Go API, while remaining independently implemented.
 
 ## Transfer lifecycle
 
@@ -122,7 +122,9 @@ Current behavior:
 - 5xx responses are not retained as successful idempotency records;
 - replayed responses expose `Idempotency-Replayed: true`.
 
-The current store is in-memory. A horizontally scaled production deployment should move idempotency records to Redis/PostgreSQL so they survive process restarts and coordinate across replicas.
+When Redis is configured, idempotency is **distributed across API replicas**. Redis coordinates an owner-scoped mutation lock and stores the replayable response for 24 hours. Two identical retries can land on different backend instances and still execute the mutation only once. If Redis is configured but unavailable, mutation idempotency fails closed with `503` rather than risking a duplicate write.
+
+Without Redis, local/test mode keeps the same semantics with an in-process store.
 
 ## Architecture
 
@@ -165,6 +167,19 @@ The production architecture is intended to add explicit modules for auth, notifi
 
 Natural future extraction points are realtime connection handling and asynchronous workers — not arbitrary domain nouns.
 
+### Durable vs. ephemeral state
+
+PIXEL GO now makes the storage split executable rather than architectural-only:
+
+- **PostgreSQL** stores durable devices and transfer metadata;
+- **Redis presence TTLs** represent whether a device appears reachable now;
+- **Redis Pub/Sub** fans realtime events across multiple API instances;
+- **Redis idempotency** coordinates retry-safe mutations across replicas;
+- **Redis rate limits** share request budgets across replicas;
+- signed URLs are regenerated from transfer state and are **not persisted** as durable credentials.
+
+CI runs the binary against real PostgreSQL + Redis and verifies that transfer metadata survives an API restart.
+
 ## Repository layout
 
 ```text
@@ -200,6 +215,7 @@ GET    /health
 GET    /v1/devices
 POST   /v1/devices
 DELETE /v1/devices/{deviceId}
+GET    /v1/presence/{deviceId}
 
 POST   /v1/transfers
 GET    /v1/transfers
@@ -207,7 +223,7 @@ GET    /v1/transfers/{transferId}
 POST   /v1/transfers/{transferId}/uploaded
 POST   /v1/transfers/{transferId}/complete
 
-GET    /v1/events                 # WebSocket upgrade
+GET    /v1/events?deviceId=...    # WebSocket upgrade + presence identity
 ```
 
 The development server also exposes signed `/dev-upload/{id}` and `/dev-download/{id}` routes as the local file adapter. Those are not intended to become the production file-storage API.
@@ -221,6 +237,7 @@ The iOS implementation currently includes:
 - Swift 6 + SwiftUI;
 - actor-based `URLSession` API client;
 - real devices / recent transfers loaded from the API;
+- Online / Offline state loaded from the Redis-backed presence endpoint;
 - Keychain credential-storage boundary;
 - BackgroundTasks coordinator;
 - notification authorization boundary;
@@ -236,6 +253,7 @@ The Android implementation currently includes:
 - Kotlin + Jetpack Compose;
 - Coroutines;
 - real devices / recent transfers loaded from the same API;
+- Online / Offline state loaded from the same Redis-backed presence endpoint;
 - Android Keystore encryption boundary;
 - WorkManager transfer-worker boundary;
 - Room entity/persistence boundary;
@@ -310,7 +328,13 @@ Implemented backend/E2E coverage now includes:
 - upload byte-count validation boundary;
 - SHA-256 integrity validation;
 - real download of the same bytes;
-- final delivered state.
+- final delivered state;
+- PostgreSQL persistence across an API process restart;
+- Redis presence TTL lifecycle;
+- Redis Pub/Sub event fan-out;
+- idempotency across independent handlers / replica boundaries;
+- shared Redis request budgets;
+- HTTP `429` + `Retry-After` rate-limit behavior.
 
 The E2E currently simulates the iPhone/Android roles through the HTTP API in CI; it does **not** claim physical-device automation yet.
 
@@ -364,7 +388,7 @@ Full setup: [docs/LOCAL_DEVELOPMENT.md](docs/LOCAL_DEVELOPMENT.md).
 - versioned OpenAPI contract;
 - native SwiftUI application foundation;
 - native Compose application foundation;
-- both clients reading the same backend state;
+- both clients reading the same backend state and live presence;
 - Go HTTP modular-monolith foundation;
 - explicit transfer state machine;
 - WebSocket realtime event hub;
@@ -374,7 +398,12 @@ Full setup: [docs/LOCAL_DEVELOPMENT.md](docs/LOCAL_DEVELOPMENT.md).
 - retry-safe idempotency with concurrent coalescing;
 - Keychain / Android Keystore boundaries;
 - BackgroundTasks / WorkManager boundaries;
-- PostgreSQL schema;
+- PostgreSQL runtime repositories for durable devices/transfers;
+- persistence verified across API restart;
+- Redis-backed presence with TTL heartbeats;
+- Redis Pub/Sub distributed realtime fan-out;
+- Redis-backed cross-replica idempotency;
+- shared Redis rate limiting with `429` / `Retry-After`;
 - local PostgreSQL + Redis + MinIO environment;
 - cross-platform CI;
 - real binary E2E lifecycle in CI;
@@ -384,8 +413,6 @@ Full setup: [docs/LOCAL_DEVELOPMENT.md](docs/LOCAL_DEVELOPMENT.md).
 **Still intentionally not claimed as complete:**
 
 - user authentication and refresh-token rotation;
-- PostgreSQL repositories wired into runtime;
-- Redis-backed distributed presence and idempotency;
 - production S3/MinIO signed-URL adapter;
 - real APNs / FCM delivery adapters;
 - generated Swift/Kotlin clients from OpenAPI;
