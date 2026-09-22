@@ -4,6 +4,92 @@ struct ContentView: View {
     @EnvironmentObject private var model: AppModel
 
     var body: some View {
+        Group {
+            if !model.didBootstrap {
+                ProgressView("Opening PIXEL GO…")
+            } else if model.isAuthenticated {
+                HomeView()
+            } else {
+                AuthView()
+            }
+        }
+    }
+}
+
+private struct AuthView: View {
+    @EnvironmentObject private var model: AppModel
+    @State private var email = ""
+    @State private var password = ""
+    @State private var createAccount = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 20) {
+            Spacer()
+
+            Text("PIXEL GO")
+                .font(.system(size: 38, weight: .black, design: .rounded))
+            Text("Your devices. One private transfer space.")
+                .font(.title3)
+                .foregroundStyle(.secondary)
+
+            TextField("Email", text: $email)
+                .textInputAutocapitalization(.never)
+                .keyboardType(.emailAddress)
+                .textContentType(.emailAddress)
+                .padding()
+                .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 16))
+
+            SecureField("Password", text: $password)
+                .textContentType(createAccount ? .newPassword : .password)
+                .padding()
+                .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 16))
+
+            Button {
+                Task {
+                    if createAccount {
+                        await model.register(email: email, password: password)
+                    } else {
+                        await model.login(email: email, password: password)
+                    }
+                }
+            } label: {
+                Group {
+                    if model.isLoading {
+                        ProgressView()
+                    } else {
+                        Text(createAccount ? "CREATE ACCOUNT" : "SIGN IN")
+                    }
+                }
+                .font(.headline)
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 14)
+            }
+            .buttonStyle(.borderedProminent)
+            .disabled(email.isEmpty || password.isEmpty || model.isLoading)
+
+            Button(createAccount ? "Already have an account? Sign in" : "New to PIXEL GO? Create account") {
+                createAccount.toggle()
+                model.errorMessage = nil
+            }
+            .frame(maxWidth: .infinity)
+
+            if let error = model.errorMessage {
+                Text(error)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .center)
+            }
+
+            Spacer()
+        }
+        .padding(28)
+    }
+}
+
+private struct HomeView: View {
+    @EnvironmentObject private var model: AppModel
+
+    var body: some View {
         NavigationStack {
             List {
                 brand
@@ -46,7 +132,10 @@ struct ContentView: View {
                                 Text(transfer.displayName ?? transfer.kind.rawValue.capitalized)
                                     .font(.headline)
                                 HStack {
-                                    Text(ByteCountFormatter.string(fromByteCount: transfer.sizeBytes, countStyle: .file))
+                                    Text(ByteCountFormatter.string(
+                                        fromByteCount: transfer.sizeBytes,
+                                        countStyle: .file
+                                    ))
                                     Spacer()
                                     Text(transfer.status.rawValue)
                                 }
@@ -74,16 +163,23 @@ struct ContentView: View {
     }
 
     private var brand: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text("PIXEL GO")
-                .font(.system(size: 34, weight: .black, design: .rounded))
-            Text("Native cross-device sharing.")
-                .foregroundStyle(.secondary)
-            if let error = model.errorMessage {
-                Text(error)
-                    .font(.caption)
+        HStack(alignment: .top) {
+            VStack(alignment: .leading, spacing: 8) {
+                Text("PIXEL GO")
+                    .font(.system(size: 34, weight: .black, design: .rounded))
+                Text("Native cross-device sharing.")
                     .foregroundStyle(.secondary)
+                if let error = model.errorMessage {
+                    Text(error)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
             }
+            Spacer()
+            Button("Sign out") {
+                Task { await model.signOut() }
+            }
+            .font(.caption)
         }
         .padding(.vertical, 24)
     }
