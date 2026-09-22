@@ -1,4 +1,6 @@
+import PhotosUI
 import SwiftUI
+import UniformTypeIdentifiers
 
 struct ContentView: View {
     @EnvironmentObject private var model: AppModel
@@ -214,7 +216,7 @@ private struct HomeView: View {
                 .background(.ultraThinMaterial)
             }
             .sheet(isPresented: $showingSend) {
-                SendTextView(destinations: destinationDevices)
+                SendView(destinations: destinationDevices)
                     .environmentObject(model)
             }
             .navigationBarHidden(true)
@@ -253,7 +255,7 @@ private struct HomeView: View {
     }
 }
 
-private struct SendTextView: View {
+private struct SendView: View {
     @EnvironmentObject private var model: AppModel
     @Environment(\.dismiss) private var dismiss
 
@@ -261,6 +263,8 @@ private struct SendTextView: View {
 
     @State private var selectedDeviceID: String
     @State private var text = ""
+    @State private var selectedPhoto: PhotosPickerItem?
+    @State private var showingFileImporter = false
 
     init(destinations: [PixelDevice]) {
         self.destinations = destinations
@@ -275,44 +279,20 @@ private struct SendTextView: View {
                 Section("TO") {
                     Picker("Device", selection: $selectedDeviceID) {
                         ForEach(destinations) { device in
-                            Text(device.name)
-                                .tag(device.id)
+                            Text(device.name).tag(device.id)
                         }
                     }
                 }
 
                 Section("TEXT OR LINK") {
                     TextEditor(text: $text)
-                        .frame(minHeight: 140)
+                        .frame(minHeight: 120)
 
-                    Text(
-                        "URLs are detected automatically and sent as link transfers."
-                    )
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                }
-
-                Section {
-                    Button {
+                    Button("Send text / link") {
                         Task {
-                            let sent = await model.sendText(
-                                text,
-                                to: selectedDeviceID
-                            )
-                            if sent {
+                            if await model.sendText(text, to: selectedDeviceID) {
                                 dismiss()
                             }
-                        }
-                    } label: {
-                        HStack {
-                            Spacer()
-                            if model.isLoading {
-                                ProgressView()
-                            } else {
-                                Text("SEND")
-                                    .fontWeight(.bold)
-                            }
-                            Spacer()
                         }
                     }
                     .disabled(
@@ -320,6 +300,37 @@ private struct SendTextView: View {
                         text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ||
                         model.isLoading
                     )
+                }
+
+                Section("PHOTO OR FILE") {
+                    PhotosPicker(
+                        selection: $selectedPhoto,
+                        matching: .images
+                    ) {
+                        Label("Choose photo", systemImage: "photo")
+                    }
+                    .disabled(selectedDeviceID.isEmpty || model.isLoading)
+
+                    Button {
+                        showingFileImporter = true
+                    } label: {
+                        Label("Choose file", systemImage: "doc")
+                    }
+                    .disabled(selectedDeviceID.isEmpty || model.isLoading)
+
+                    Text("Payload bytes upload directly to object storage through a short-lived signed URL.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+
+                if model.isLoading {
+                    Section {
+                        HStack {
+                            Spacer()
+                            ProgressView("Sending…")
+                            Spacer()
+                        }
+                    }
                 }
             }
             .navigationTitle("Send")
@@ -329,6 +340,72 @@ private struct SendTextView: View {
                     Button("Cancel") { dismiss() }
                 }
             }
+            .onChange(of: selectedPhoto) { _, item in
+                guard let item else { return }
+                Task { await sendPhoto(item) }
+            }
+            .fileImporter(
+                isPresented: $showingFileImporter,
+                allowedContentTypes: [.item],
+                allowsMultipleSelection: false
+            ) { result in
+                guard case .success(let urls) = result, let url = urls.first else {
+                    return
+                }
+                Task { await sendFile(url) }
+            }
+        }
+    }
+
+    private func sendPhoto(_ item: PhotosPickerItem) async {
+        do {
+            guard let data = try await item.loadTransferable(type: Data.self) else {
+                return
+            }
+
+            let type = item.supportedContentTypes.first ?? .image
+            let ext = type.preferredFilenameExtension ?? "jpg"
+            let mime = type.preferredMIMEType ?? "image/jpeg"
+
+            if await model.sendPayload(
+                data,
+                kind: .photo,
+                displayName: "Photo.\(ext)",
+                contentType: mime,
+                to: selectedDeviceID
+            ) {
+                dismiss()
+            }
+        } catch {
+            model.errorMessage = error.localizedDescription
+        }
+    }
+
+    private func sendFile(_ url: URL) async {
+        let scoped = url.startAccessingSecurityScopedResource()
+        defer {
+            if scoped {
+                url.stopAccessingSecurityScopedResource()
+            }
+        }
+
+        do {
+            let data = try Data(contentsOf: url, options: .mappedIfSafe)
+            let values = try? url.resourceValues(forKeys: [.contentTypeKey])
+            let mime = values?.contentType?.preferredMIMEType
+                ?? "application/octet-stream"
+
+            if await model.sendPayload(
+                data,
+                kind: .file,
+                displayName: url.lastPathComponent,
+                contentType: mime,
+                to: selectedDeviceID
+            ) {
+                dismiss()
+            }
+        } catch {
+            model.errorMessage = error.localizedDescription
         }
     }
 }
