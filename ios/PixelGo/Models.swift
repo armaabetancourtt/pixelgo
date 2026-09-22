@@ -17,6 +17,16 @@ struct RefreshRequest: Codable {
     let refreshToken: String
 }
 
+struct RegisterDeviceRequest: Codable {
+    let name: String
+    let platform: String
+    let pushToken: String?
+}
+
+struct RealtimeEventEnvelope: Codable, Hashable {
+    let type: String
+}
+
 struct PixelDevice: Codable, Identifiable, Hashable {
     let id: String
     let name: String
