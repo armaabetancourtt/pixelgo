@@ -20,6 +20,21 @@ def request(method, path, body=None, headers=None):
         return None if not raw else json.loads(raw)
 
 
+def upload(url, payload, content_type):
+    req = urllib.request.Request(url, data=payload, method="PUT")
+    req.add_header("Content-Type", content_type)
+    req.add_header("Content-Length", str(len(payload)))
+    with urllib.request.urlopen(req, timeout=3) as response:
+        assert response.status == 204, response.status
+
+
+def download(url):
+    req = urllib.request.Request(url, method="GET")
+    with urllib.request.urlopen(req, timeout=3) as response:
+        assert response.status == 200, response.status
+        return response.read()
+
+
 def main():
     iphone = request(
         "POST",
@@ -61,6 +76,9 @@ def main():
 
     assert transfer["status"] == "uploading", transfer
     assert retry["id"] == transfer["id"], (transfer, retry)
+    assert transfer["uploadUrl"].startswith("http://localhost:8080/dev-upload/")
+
+    upload(transfer["uploadUrl"], payload, "text/plain")
 
     ready = request(
         "POST",
@@ -68,6 +86,11 @@ def main():
         headers={"Idempotency-Key": "e2e-transfer-uploaded"},
     )
     assert ready["status"] == "ready", ready
+    assert ready["downloadUrl"].startswith("http://localhost:8080/dev-download/")
+
+    received = download(ready["downloadUrl"])
+    assert received == payload
+    assert hashlib.sha256(received).hexdigest() == checksum
 
     delivered = request(
         "POST",
@@ -80,7 +103,7 @@ def main():
     fetched = request("GET", f"/v1/transfers/{transfer['id']}")
     assert fetched["status"] == "completed"
 
-    print("PASS: iOS -> Android lifecycle + retry-safe idempotency")
+    print("PASS: real signed upload/download + SHA-256 + idempotent delivery")
 
 
 if __name__ == "__main__":
