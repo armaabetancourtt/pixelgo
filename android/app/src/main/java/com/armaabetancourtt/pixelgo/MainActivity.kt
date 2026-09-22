@@ -322,12 +322,9 @@ private fun PixelGoApp(
         scope.launch {
             isLoading = true
             try {
-                val payload = api.downloadPayload(transfer)
-
-                withContext(Dispatchers.IO) {
-                    context.contentResolver.openOutputStream(destinationUri)?.use {
-                        it.write(payload)
-                    } ?: error("Could not open destination file.")
+                api.downloadPayloadTo(transfer) {
+                    context.contentResolver.openOutputStream(destinationUri)
+                        ?: error("Could not open destination file.")
                 }
 
                 api.completeTransfer(transfer.id)
