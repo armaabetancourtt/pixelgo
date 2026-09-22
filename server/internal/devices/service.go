@@ -27,6 +27,7 @@ type RegisterInput struct {
 type Repository interface {
 	Create(context.Context, Device) (Device, error)
 	List(context.Context) ([]Device, error)
+	Get(context.Context, string) (Device, error)
 	Delete(context.Context, string) error
 }
 
@@ -63,6 +64,10 @@ func (s *Service) Register(ctx context.Context, in RegisterInput) (Device, error
 
 func (s *Service) List(ctx context.Context) ([]Device, error) {
 	return s.repo.List(ctx)
+}
+
+func (s *Service) Get(ctx context.Context, id string) (Device, error) {
+	return s.repo.Get(ctx, id)
 }
 
 func (s *Service) Delete(ctx context.Context, id string) error {
