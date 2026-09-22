@@ -26,6 +26,9 @@ func main() {
 	signingSecret := env("PIXELGO_SIGNING_SECRET", "pixelgo-local-signing-secret-change-me")
 	jwtSecret := env("PIXELGO_JWT_SECRET", "pixelgo-local-jwt-secret-change-me-32")
 	requireAuth := envBool("PIXELGO_REQUIRE_AUTH", false)
+	if len(jwtSecret) < 32 {
+		log.Fatal("PIXELGO_JWT_SECRET must be at least 32 bytes")
+	}
 
 	var authRepo auth.Repository = auth.NewMemoryRepository()
 	var deviceRepo devices.Repository = devices.NewMemoryRepository()
