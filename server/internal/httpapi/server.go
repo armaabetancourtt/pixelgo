@@ -226,11 +226,6 @@ func (s *Server) getTransfer(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) markUploaded(w http.ResponseWriter, r *http.Request) {
 	transferID := r.PathValue("transferId")
-	if !s.files.Exists(transferID) {
-		writeError(w, http.StatusConflict, "upload_missing", "payload has not been uploaded")
-		return
-	}
-
 	t, err := s.transfers.MarkUploaded(r.Context(), transferID)
 	s.writeTransferResult(w, t, err)
 }
@@ -241,6 +236,10 @@ func (s *Server) complete(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) devUpload(w http.ResponseWriter, r *http.Request) {
+	if !s.files.IsLocal() {
+		writeError(w, http.StatusNotFound, "not_found", "local upload adapter is disabled")
+		return
+	}
 	transferID := r.PathValue("transferId")
 	if err := s.files.Verify(
 		"upload",
@@ -288,6 +287,10 @@ func (s *Server) devUpload(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) devDownload(w http.ResponseWriter, r *http.Request) {
+	if !s.files.IsLocal() {
+		writeError(w, http.StatusNotFound, "not_found", "local download adapter is disabled")
+		return
+	}
 	transferID := r.PathValue("transferId")
 	if err := s.files.Verify(
 		"download",
@@ -336,6 +339,10 @@ func (s *Server) writeTransferResult(w http.ResponseWriter, t transfers.Transfer
 		writeError(w, http.StatusNotFound, "not_found", "transfer not found")
 	case errors.Is(err, transfers.ErrInvalidTransition):
 		writeError(w, http.StatusConflict, "invalid_transition", err.Error())
+	case errors.Is(err, transfers.ErrUploadMissing):
+		writeError(w, http.StatusConflict, "upload_missing", "payload has not been uploaded")
+	case errors.Is(err, transfers.ErrUploadIntegrity):
+		writeError(w, http.StatusUnprocessableEntity, "upload_integrity_failed", err.Error())
 	default:
 		writeError(w, http.StatusInternalServerError, "internal_error", "transfer update failed")
 	}
