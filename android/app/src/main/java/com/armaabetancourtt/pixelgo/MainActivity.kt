@@ -51,12 +51,27 @@ private fun PixelGoHome() {
     var status by remember { mutableStateOf("Connecting…") }
     var devices by remember { mutableStateOf<List<PixelDevice>>(emptyList()) }
     var transfers by remember { mutableStateOf<List<Transfer>>(emptyList()) }
+    var onlineDeviceIds by remember { mutableStateOf<Set<String>>(emptySet()) }
 
     LaunchedEffect(Unit) {
         runCatching {
             api.health()
-            devices = api.listDevices()
+            val loadedDevices = api.listDevices()
+            devices = loadedDevices
             transfers = api.listTransfers()
+
+            val online = mutableSetOf<String>()
+            for (device in loadedDevices) {
+                try {
+                    if (api.isDeviceOnline(device.id)) {
+                        online += device.id
+                    }
+                } catch (_: Exception) {
+                    // Presence is ephemeral; a temporary lookup failure should
+                    // not prevent the durable device list from rendering.
+                }
+            }
+            onlineDeviceIds = online
         }.fold(
             onSuccess = { status = "API online" },
             onFailure = { status = "Local API unavailable" }
@@ -114,7 +129,15 @@ private fun PixelGoHome() {
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                     }
-                    Text("Registered", style = MaterialTheme.typography.labelMedium)
+                    Text(
+                        if (onlineDeviceIds.contains(device.id)) "Online" else "Offline",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = if (onlineDeviceIds.contains(device.id)) {
+                            MaterialTheme.colorScheme.primary
+                        } else {
+                            MaterialTheme.colorScheme.onSurfaceVariant
+                        }
+                    )
                 }
             }
         }
