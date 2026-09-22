@@ -346,7 +346,8 @@ Implemented:
 - direct binary upload to S3/MinIO through presigned PUT;
 - verified incoming file/photo download and local save before completion;
 - BackgroundTasks boundary;
-- notification permission boundary;
+- native APNs registration + device-token rotation sync;
+- foreground notification presentation;
 - XCTest + host contract tests;
 - reproducible XcodeGen project.
 
@@ -368,9 +369,47 @@ Implemented:
 - verified incoming file/photo download and Storage Access Framework save before completion;
 - WorkManager boundary;
 - Room persistence boundary;
-- FCM dependency boundary;
+- FCM token registration + onNewToken rotation sync;
+- FirebaseMessagingService notification handling;
 - JUnit;
 - AndroidX build configuration.
+
+## Durable push wake-up
+
+Push is a fallback for devices that are not currently reachable through realtime.
+
+```text
+transfer becomes ready
+        ↓
+PostgreSQL transaction
+        ├── transfer status = ready
+        └── notification_outbox row
+                    ↓
+        worker claims with SKIP LOCKED
+                    ↓
+            check Redis presence
+              ↙             ↘
+         online             offline
+           ↓                   ↓
+   WebSocket already       APNs / FCM
+     delivered event        wake-up
+                                ↓
+                       retry with backoff
+```
+
+Implemented properties:
+
+- device push tokens can rotate independently through a user-scoped API endpoint;
+- iOS registers APNs tokens and republishes rotations to the backend;
+- Android syncs the current FCM token and handles `onNewToken`;
+- the `transfer.ready` outbox row is created transactionally in PostgreSQL;
+- multiple worker replicas claim work with `FOR UPDATE SKIP LOCKED`;
+- online devices skip push because the WebSocket path is already active;
+- transient provider failures retry with exponential backoff;
+- permanent provider failures stop retrying;
+- APNs uses token-based ES256 authentication over the HTTP/2 provider API;
+- FCM uses the HTTP v1 API with service-account OAuth2;
+- provider credentials are intentionally not committed.
 
 ## Observability
 
@@ -454,7 +493,9 @@ The goal is not a vanity test count. Tests target invariants that would hurt rea
 - Redis presence expiry;
 - Redis Pub/Sub fan-out;
 - shared rate-limit counters;
-- mobile contract decoding.
+- mobile contract decoding;
+- push worker retry/permanent-failure semantics;
+- PostgreSQL notification-outbox trigger and exclusive claim behavior.
 
 ## Local development
 
@@ -540,7 +581,7 @@ Full setup: [docs/LOCAL_DEVELOPMENT.md](docs/LOCAL_DEVELOPMENT.md).
 ### Intentionally still pending
 
 - object lifecycle / retention, quota and production bucket-policy hardening;
-- real APNs / FCM delivery adapters and push credentials;
+- real APNs / FCM credentials for deployed app projects;
 - background upload / resume for large payloads;
 - background destination auto-download and save policy;
 - content end-to-end encryption;
