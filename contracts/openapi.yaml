@@ -147,7 +147,12 @@ paths:
     get:
       tags: [system]
       operationId: connectEvents
-      description: Upgrades to a WebSocket connection. Event payloads use RealtimeEvent.
+      description: Upgrades to a WebSocket connection. The deviceId identifies the registered device whose presence lease is maintained for the lifetime of the connection.
+      parameters:
+        - name: deviceId
+          in: query
+          required: true
+          schema: { type: string }
       responses:
         "101":
           description: Switching Protocols
@@ -194,7 +199,7 @@ components:
         status: { type: string, const: ok }
     Device:
       type: object
-      required: [id, name, platform, createdAt]
+      required: [id, name, platform, online, createdAt]
       properties:
         id: { type: string }
         name: { type: string }
@@ -202,6 +207,7 @@ components:
           type: string
           enum: [ios, android]
         pushToken: { type: string }
+        online: { type: boolean }
         createdAt: { type: string, format: date-time }
     RegisterDeviceRequest:
       type: object
