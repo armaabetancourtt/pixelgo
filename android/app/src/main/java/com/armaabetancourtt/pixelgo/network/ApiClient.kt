@@ -1,6 +1,7 @@
 package com.armaabetancourtt.pixelgo.network
 
 import com.armaabetancourtt.pixelgo.model.PixelDevice
+import com.armaabetancourtt.pixelgo.model.ReceivedTextItem
 import com.armaabetancourtt.pixelgo.model.TokenPair
 import com.armaabetancourtt.pixelgo.model.Transfer
 import com.armaabetancourtt.pixelgo.security.SessionStore
@@ -12,6 +13,8 @@ import org.json.JSONArray
 import org.json.JSONObject
 import java.net.HttpURLConnection
 import java.net.URL
+import java.security.MessageDigest
+import java.util.UUID
 
 class ApiClient(
     private val baseUrl: String,
@@ -69,28 +72,111 @@ class ApiClient(
                 .toString(),
             headers = mapOf("Idempotency-Key" to idempotencyKey)
         )
-        val item = JSONObject(response)
-        val device = PixelDevice(
-            id = item.getString("id"),
-            name = item.getString("name"),
-            platform = item.getString("platform")
-        )
+        val device = parseDevice(JSONObject(response))
         sessionStore.saveDeviceId(session.userId, device.id)
         return device
+    }
+
+    suspend fun sendText(
+        text: String,
+        sourceDeviceId: String,
+        destinationDeviceId: String
+    ): Transfer {
+        val payload = text.toByteArray(Charsets.UTF_8)
+        val kind = inferTextKind(text)
+        val checksum = sha256Hex(payload)
+        val contentType = "text/plain; charset=utf-8"
+
+        val created = parseTransfer(
+            JSONObject(
+                authenticatedRequest(
+                    method = "POST",
+                    path = "/v1/transfers",
+                    body = JSONObject()
+                        .put("sourceDeviceId", sourceDeviceId)
+                        .put("destinationDeviceId", destinationDeviceId)
+                        .put("kind", kind)
+                        .put("displayName", if (kind == "link") "Link" else "Text")
+                        .put("contentType", contentType)
+                        .put("sizeBytes", payload.size)
+                        .put("sha256", checksum)
+                        .toString(),
+                    headers = mapOf(
+                        "Idempotency-Key" to (
+                            "transfer-create-" +
+                                UUID.randomUUID().toString().lowercase()
+                        )
+                    )
+                )
+            )
+        )
+
+        val uploadUrl = created.uploadUrl
+            ?: throw ApiException(500, "missing signed upload URL")
+        uploadSigned(
+            rawUrl = uploadUrl,
+            payload = payload,
+            contentType = contentType
+        )
+
+        return parseTransfer(
+            JSONObject(
+                authenticatedRequest(
+                    method = "POST",
+                    path = "/v1/transfers/${created.id}/uploaded",
+                    headers = mapOf(
+                        "Idempotency-Key" to "transfer-uploaded-${created.id}"
+                    )
+                )
+            )
+        )
+    }
+
+    suspend fun receiveReadyTextItems(
+        destinationDeviceId: String
+    ): List<ReceivedTextItem> {
+        val received = mutableListOf<ReceivedTextItem>()
+
+        for (transfer in listTransfers()) {
+            if (
+                transfer.destinationDeviceId != destinationDeviceId ||
+                transfer.status != "ready" ||
+                transfer.kind !in setOf("text", "link", "clipboard")
+            ) {
+                continue
+            }
+
+            val downloadUrl = transfer.downloadUrl ?: continue
+            val payload = downloadSigned(downloadUrl)
+
+            if (!sha256Hex(payload).equals(transfer.sha256, ignoreCase = true)) {
+                throw ChecksumMismatchException()
+            }
+
+            val text = payload.toString(Charsets.UTF_8)
+            authenticatedRequest(
+                method = "POST",
+                path = "/v1/transfers/${transfer.id}/complete",
+                headers = mapOf(
+                    "Idempotency-Key" to "transfer-complete-${transfer.id}"
+                )
+            )
+
+            received += ReceivedTextItem(
+                id = transfer.id,
+                kind = transfer.kind,
+                text = text
+            )
+        }
+
+        return received
     }
 
     suspend fun listDevices(): List<PixelDevice> {
         val array = JSONArray(authenticatedGet("/v1/devices"))
         return buildList {
             for (index in 0 until array.length()) {
-                val item = array.getJSONObject(index)
-                add(
-                    PixelDevice(
-                        id = item.getString("id"),
-                        name = item.getString("name"),
-                        platform = item.getString("platform")
-                    )
-                )
+                add(parseDevice(array.getJSONObject(index)))
             }
         }
     }
@@ -104,20 +190,38 @@ class ApiClient(
         val array = JSONArray(authenticatedGet("/v1/transfers"))
         return buildList {
             for (index in 0 until array.length()) {
-                val item = array.getJSONObject(index)
-                add(
-                    Transfer(
-                        id = item.getString("id"),
-                        kind = item.getString("kind"),
-                        status = item.getString("status"),
-                        displayName = item
-                            .optString("displayName")
-                            .takeIf { it.isNotBlank() },
-                        sizeBytes = item.getLong("sizeBytes")
-                    )
-                )
+                add(parseTransfer(array.getJSONObject(index)))
             }
         }
+    }
+
+    private fun parseDevice(item: JSONObject): PixelDevice {
+        return PixelDevice(
+            id = item.getString("id"),
+            name = item.getString("name"),
+            platform = item.getString("platform")
+        )
+    }
+
+    private fun parseTransfer(item: JSONObject): Transfer {
+        return Transfer(
+            id = item.getString("id"),
+            sourceDeviceId = item.getString("sourceDeviceId"),
+            destinationDeviceId = item.getString("destinationDeviceId"),
+            kind = item.getString("kind"),
+            status = item.getString("status"),
+            displayName = item.optionalString("displayName"),
+            contentType = item.optionalString("contentType"),
+            sizeBytes = item.getLong("sizeBytes"),
+            sha256 = item.getString("sha256"),
+            uploadUrl = item.optionalString("uploadUrl"),
+            downloadUrl = item.optionalString("downloadUrl")
+        )
+    }
+
+    private fun JSONObject.optionalString(name: String): String? {
+        if (!has(name) || isNull(name)) return null
+        return getString(name).takeIf { it.isNotBlank() }
     }
 
     private suspend fun authenticatedGet(path: String): String {
@@ -160,12 +264,6 @@ class ApiClient(
         ).requireSuccess()
     }
 
-    /**
-     * Refresh tokens rotate on every use. If several API calls receive 401 at
-     * once, only the first coroutine is allowed to rotate the token. Later
-     * callers observe that the stored access token already changed and reuse
-     * the new session instead of replaying the old refresh token.
-     */
     private suspend fun refreshSingleFlight(failedAccessToken: String) {
         refreshMutex.withLock {
             val current = sessionStore.load() ?: throw NoSessionException()
@@ -199,6 +297,94 @@ class ApiClient(
             tokenType = payload.getString("tokenType"),
             expiresInSeconds = payload.getLong("expiresInSeconds")
         )
+    }
+
+    private suspend fun uploadSigned(
+        rawUrl: String,
+        payload: ByteArray,
+        contentType: String
+    ) = withContext(Dispatchers.IO) {
+        val connection = resolveSignedUrl(rawUrl)
+            .openConnection() as HttpURLConnection
+        try {
+            connection.requestMethod = "PUT"
+            connection.doOutput = true
+            connection.connectTimeout = 10_000
+            connection.readTimeout = 10_000
+            connection.setRequestProperty("Content-Type", contentType)
+            connection.setFixedLengthStreamingMode(payload.size)
+            connection.outputStream.use { it.write(payload) }
+
+            val status = connection.responseCode
+            if (status !in 200..299) {
+                val error = connection.errorStream
+                    ?.bufferedReader()
+                    ?.use { it.readText() }
+                    .orEmpty()
+                throw ApiException(status, error)
+            }
+        } finally {
+            connection.disconnect()
+        }
+    }
+
+    private suspend fun downloadSigned(rawUrl: String): ByteArray =
+        withContext(Dispatchers.IO) {
+            val connection = resolveSignedUrl(rawUrl)
+                .openConnection() as HttpURLConnection
+            try {
+                connection.requestMethod = "GET"
+                connection.connectTimeout = 10_000
+                connection.readTimeout = 10_000
+
+                val status = connection.responseCode
+                if (status !in 200..299) {
+                    val error = connection.errorStream
+                        ?.bufferedReader()
+                        ?.use { it.readText() }
+                        .orEmpty()
+                    throw ApiException(status, error)
+                }
+                connection.inputStream.use { it.readBytes() }
+            } finally {
+                connection.disconnect()
+            }
+        }
+
+    /**
+     * The development file adapter signs action/id/expiry rather than host.
+     * Android emulators reach the host machine through 10.0.2.2, while the
+     * backend's local signed URL may contain localhost. Preserve path/query
+     * and replace only the development host with the configured API host.
+     */
+    private fun resolveSignedUrl(rawUrl: String): URL {
+        val signed = URL(rawUrl)
+        if (signed.host != "localhost" && signed.host != "127.0.0.1") {
+            return signed
+        }
+
+        val api = URL(baseUrl)
+        val port = if (api.port >= 0) api.port else api.defaultPort
+        return URL(api.protocol, api.host, port, signed.file)
+    }
+
+    private fun inferTextKind(value: String): String {
+        val protocol = runCatching {
+            URL(value.trim()).protocol.lowercase()
+        }.getOrNull()
+        return if (protocol == "http" || protocol == "https") {
+            "link"
+        } else {
+            "text"
+        }
+    }
+
+    private fun sha256Hex(payload: ByteArray): String {
+        return MessageDigest.getInstance("SHA-256")
+            .digest(payload)
+            .joinToString("") {
+                "%02x".format(it.toInt() and 0xff)
+            }
     }
 
     private suspend fun execute(
@@ -285,3 +471,6 @@ class NoSessionException : Exception("Sign in to continue.")
 class SessionExpiredException(
     cause: Throwable? = null
 ) : Exception("Your session expired. Sign in again.", cause)
+
+class ChecksumMismatchException :
+    Exception("The received payload failed SHA-256 verification.")
