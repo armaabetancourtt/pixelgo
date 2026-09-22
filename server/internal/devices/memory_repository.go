@@ -65,6 +65,27 @@ func (r *MemoryRepository) Get(ctx context.Context, id string) (Device, error) {
 	return record.device, nil
 }
 
+func (r *MemoryRepository) UpdatePushToken(
+	ctx context.Context,
+	id string,
+	token string,
+) (Device, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	record, ok := r.items[id]
+	if !ok {
+		return Device{}, ErrNotFound
+	}
+	userID := auth.UserID(ctx)
+	if userID != "" && record.userID != userID {
+		return Device{}, ErrNotFound
+	}
+	record.device.PushToken = token
+	r.items[id] = record
+	return record.device, nil
+}
+
 func (r *MemoryRepository) Delete(ctx context.Context, id string) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
