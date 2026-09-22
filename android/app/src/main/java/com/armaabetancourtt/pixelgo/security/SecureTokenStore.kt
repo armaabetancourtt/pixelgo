@@ -1,82 +1,35 @@
 package com.armaabetancourtt.pixelgo.security
 
-import android.content.Context
 import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyProperties
-import android.util.Base64
-import com.armaabetancourtt.pixelgo.model.TokenPair
-import org.json.JSONObject
 import java.security.KeyStore
 import javax.crypto.Cipher
 import javax.crypto.KeyGenerator
 import javax.crypto.SecretKey
 import javax.crypto.spec.GCMParameterSpec
 
-class SecureTokenStore(context: Context) {
+/**
+ * Cryptographic boundary for session material.
+ *
+ * Persistence intentionally lives in SessionStore. This class owns only the
+ * Android Keystore-backed AES key and AES-GCM encryption/decryption.
+ */
+class SecureTokenStore {
     private val alias = "pixelgo.session"
-    private val keyStore = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
-    private val preferences = context.getSharedPreferences(
-        "pixelgo.secure.session",
-        Context.MODE_PRIVATE
-    )
-
-    @Synchronized
-    fun save(pair: TokenPair) {
-        val json = JSONObject()
-            .put("accessToken", pair.accessToken)
-            .put("refreshToken", pair.refreshToken)
-            .put("tokenType", pair.tokenType)
-            .put("expiresInSeconds", pair.expiresInSeconds)
-            .toString()
-            .encodeToByteArray()
-
-        val encrypted = encrypt(json)
-        preferences.edit()
-            .putString("iv", Base64.encodeToString(encrypted.iv, Base64.NO_WRAP))
-            .putString(
-                "ciphertext",
-                Base64.encodeToString(encrypted.ciphertext, Base64.NO_WRAP)
-            )
-            .apply()
+    private val keyStore = KeyStore.getInstance("AndroidKeyStore").apply {
+        load(null)
     }
 
-    @Synchronized
-    fun load(): TokenPair? {
-        val ivEncoded = preferences.getString("iv", null) ?: return null
-        val ciphertextEncoded = preferences.getString("ciphertext", null) ?: return null
-
-        return runCatching {
-            val plaintext = decrypt(
-                EncryptedValue(
-                    iv = Base64.decode(ivEncoded, Base64.NO_WRAP),
-                    ciphertext = Base64.decode(ciphertextEncoded, Base64.NO_WRAP)
-                )
-            )
-            val json = JSONObject(plaintext.decodeToString())
-            TokenPair(
-                accessToken = json.getString("accessToken"),
-                refreshToken = json.getString("refreshToken"),
-                tokenType = json.getString("tokenType"),
-                expiresInSeconds = json.getLong("expiresInSeconds")
-            )
-        }.getOrElse {
-            clear()
-            null
-        }
-    }
-
-    @Synchronized
-    fun clear() {
-        preferences.edit().clear().apply()
-    }
-
-    private fun encrypt(value: ByteArray): EncryptedValue {
+    fun encrypt(value: ByteArray): EncryptedValue {
         val cipher = Cipher.getInstance("AES/GCM/NoPadding")
         cipher.init(Cipher.ENCRYPT_MODE, getOrCreateKey())
-        return EncryptedValue(cipher.iv, cipher.doFinal(value))
+        return EncryptedValue(
+            iv = cipher.iv,
+            ciphertext = cipher.doFinal(value)
+        )
     }
 
-    private fun decrypt(value: EncryptedValue): ByteArray {
+    fun decrypt(value: EncryptedValue): ByteArray {
         val cipher = Cipher.getInstance("AES/GCM/NoPadding")
         cipher.init(
             Cipher.DECRYPT_MODE,
@@ -106,7 +59,7 @@ class SecureTokenStore(context: Context) {
     }
 }
 
-private data class EncryptedValue(
+data class EncryptedValue(
     val iv: ByteArray,
     val ciphertext: ByteArray
 )
