@@ -139,7 +139,8 @@ actor APIClient {
         try await upload(
             payload,
             to: uploadURL,
-            contentType: contentType
+            contentType: contentType,
+            sha256: checksum
         )
 
         let ready: Transfer = try await authenticatedMutation(
@@ -342,12 +343,14 @@ actor APIClient {
     private func upload(
         _ data: Data,
         to url: URL,
-        contentType: String
+        contentType: String,
+        sha256: String
     ) async throws {
         var request = URLRequest(url: url)
         request.httpMethod = "PUT"
         request.setValue(contentType, forHTTPHeaderField: "Content-Type")
         request.setValue(String(data.count), forHTTPHeaderField: "Content-Length")
+        request.setValue(sha256, forHTTPHeaderField: "X-Amz-Meta-Sha256")
 
         let (_, response) = try await session.upload(
             for: request,
