@@ -29,7 +29,7 @@ type Repository interface {
 }
 
 type Publisher interface {
-	Publish(eventType string, payload any)
+	PublishToDevices(deviceIDs []string, eventType string, payload any)
 }
 
 type SignedURLProvider interface {
@@ -163,7 +163,11 @@ func (s *Service) MarkUploaded(ctx context.Context, id string) (Transfer, error)
 	}
 
 	t.DownloadURL = downloadURL
-	s.publisher.Publish("transfer.ready", t)
+	s.publisher.PublishToDevices(
+		[]string{t.DestinationDeviceID},
+		"transfer.ready",
+		realtimePayload(t),
+	)
 	return t, nil
 }
 
@@ -192,7 +196,11 @@ func (s *Service) Complete(ctx context.Context, id string) (Transfer, error) {
 	}
 
 	t.DownloadURL = downloadURL
-	s.publisher.Publish("transfer.completed", t)
+	s.publisher.PublishToDevices(
+		[]string{t.SourceDeviceID},
+		"transfer.completed",
+		realtimePayload(t),
+	)
 	return t, nil
 }
 
@@ -219,6 +227,15 @@ func (s *Service) decorate(
 	}
 
 	return t, nil
+}
+
+func realtimePayload(t Transfer) map[string]any {
+	return map[string]any{
+		"transferId":  t.ID,
+		"kind":        t.Kind,
+		"displayName": t.DisplayName,
+		"status":      t.Status,
+	}
 }
 
 func newID(prefix string) (string, error) {
