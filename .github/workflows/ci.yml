@@ -36,7 +36,7 @@ jobs:
           docker run --rm             -v "${{ github.workspace }}:/repo"             -v "/tmp:/tmp"             tufin/oasdiff:latest             breaking /tmp/base-openapi.yaml /repo/contracts/openapi.yaml
 
   backend:
-    name: Go + PostgreSQL backend
+    name: Go + PostgreSQL + Redis backend
     runs-on: ubuntu-latest
     services:
       postgres:
@@ -52,9 +52,19 @@ jobs:
           --health-interval 5s
           --health-timeout 3s
           --health-retries 10
+      redis:
+        image: redis:8-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
     env:
       DATABASE_URL: postgres://pixelgo:pixelgo@127.0.0.1:5432/pixelgo?sslmode=disable
       PIXELGO_AUTO_MIGRATE: "true"
+      REDIS_URL: redis://127.0.0.1:6379/0
     defaults:
       run:
         working-directory: server
