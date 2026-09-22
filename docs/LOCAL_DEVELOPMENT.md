@@ -23,9 +23,11 @@ Services:
 - MinIO API: localhost:9000
 - MinIO console: localhost:9001
 
-PostgreSQL and Redis are used automatically when DATABASE_URL and REDIS_URL are present.
+PostgreSQL and Redis are used automatically when `DATABASE_URL` and `REDIS_URL` are present.
 
-MinIO is provisioned for the production-style storage milestone; the current signed local payload adapter remains in-process for deterministic E2E tests.
+MinIO is the S3-compatible payload store when `OBJECT_STORAGE_ENDPOINT` is set. The Compose file uses the official `quay.io/minio/minio` image. With the example local settings and `OBJECT_STORAGE_AUTO_CREATE=true`, the API creates the bucket if it does not exist.
+
+The Go process does not automatically source `.env`; export/source those values in your shell or inject them through your process manager.
 
 ## Backend
 
@@ -52,6 +54,14 @@ To exercise the production-style path used by CI:
 ~~~bash
 export PIXELGO_REQUIRE_AUTH=true
 export PIXELGO_JWT_SECRET='local-development-secret-at-least-32-bytes'
+
+export OBJECT_STORAGE_ENDPOINT='http://localhost:9000'
+export OBJECT_STORAGE_BUCKET='pixelgo'
+export OBJECT_STORAGE_ACCESS_KEY='pixelgo'
+export OBJECT_STORAGE_SECRET_KEY='pixelgo-local-secret'
+export OBJECT_STORAGE_REGION='us-east-1'
+export OBJECT_STORAGE_PREFIX='transfers'
+export OBJECT_STORAGE_AUTO_CREATE='true'
 ~~~
 
 Do not reuse the example JWT secret in a real deployment.
@@ -90,15 +100,16 @@ The E2E proves:
 2. protected route rejects missing Bearer;
 3. iPhone and Android roles register under the account;
 4. transfer creation is retry-safe;
-5. bytes upload through a signed URL;
-6. server validates size and SHA-256;
-7. bytes download unchanged;
-8. transfer reaches completed;
-9. a second account cannot see the first account's resources;
-10. refresh rotates;
-11. reuse of the old refresh token revokes the family.
+5. bytes upload directly to MinIO through a presigned PUT;
+6. the signed PUT carries SHA-256 metadata;
+7. the API HEADs MinIO and validates exact size + checksum before `ready`;
+8. bytes download directly through a presigned GET and hash unchanged;
+9. transfer reaches completed;
+10. a second account cannot see the first account's resources;
+11. refresh rotates;
+12. reuse of the old refresh token revokes the family.
 
-CI additionally restarts the API and logs in again to prove PostgreSQL state survived.
+CI additionally restarts the API and logs in again to prove PostgreSQL metadata survived while the object remains independently durable in MinIO.
 
 ## iOS
 
@@ -135,18 +146,30 @@ The app includes native register/login UI. Session JSON is encrypted with AES-GC
 
 Concurrent refresh attempts are serialized by a coroutine Mutex.
 
-## File-development constraint
+## Object storage modes
 
-The current signed-payload development adapter stores file bytes in API process memory and is limited to 64 MiB.
+### S3 / MinIO mode
 
-That is intentionally not presented as the final storage architecture.
+When `OBJECT_STORAGE_ENDPOINT` is configured:
 
-Next storage milestone:
+- the API issues short-lived presigned PUT/GET URLs;
+- clients upload/download directly to object storage;
+- uploads must include the signed `X-Amz-Meta-Sha256` header;
+- `POST /uploaded` performs an object HEAD;
+- exact size + checksum metadata are verified before the transfer becomes ready.
 
-- direct S3/MinIO presigned PUT/GET;
-- object expiry/cleanup;
-- production-size limits;
-- background validation where required.
+This is the mode exercised by backend CI.
+
+### Local fallback mode
+
+When object storage is unset, the HMAC-signed development adapter stores payload bytes in the API process and exposes `/dev-upload` / `/dev-download`. It is limited to 64 MiB and exists for isolated development/tests.
+
+Remaining storage work is operational rather than architectural:
+
+- lifecycle/expiry cleanup;
+- production IAM and bucket policies;
+- quotas;
+- multipart/background behavior for very large payloads.
 
 ## Push-development constraint
 
