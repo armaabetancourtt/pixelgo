@@ -7,8 +7,11 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
+
+	"github.com/armaabetancourtt/pixelgo/server/internal/auth"
 )
 
 const maxIdempotentBodyBytes = 1 << 20
@@ -40,7 +43,7 @@ func newIdempotencyStore(ttl time.Duration) *idempotencyStore {
 func withIdempotency(next http.Handler, store *idempotencyStore) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		key := r.Header.Get("Idempotency-Key")
-		if key == "" || r.Method != http.MethodPost {
+		if key == "" || r.Method != http.MethodPost || strings.HasPrefix(r.URL.Path, "/v1/auth/") {
 			next.ServeHTTP(w, r)
 			return
 		}
@@ -60,11 +63,12 @@ func withIdempotency(next http.Handler, store *idempotencyStore) http.Handler {
 		}
 
 		fingerprint := requestFingerprint(r, body)
+		storageKey := scopedIdempotencyKey(r, key)
 		now := time.Now()
 
 		store.mu.Lock()
 		store.pruneExpiredLocked(now)
-		if existing, ok := store.entries[key]; ok {
+		if existing, ok := store.entries[storageKey]; ok {
 			if existing.fingerprint != fingerprint {
 				store.mu.Unlock()
 				writeError(w, http.StatusConflict, "idempotency_key_reused", "idempotency key was already used with a different request")
@@ -85,7 +89,7 @@ func withIdempotency(next http.Handler, store *idempotencyStore) http.Handler {
 			fingerprint: fingerprint,
 			ready:       make(chan struct{}),
 		}
-		store.entries[key] = entry
+		store.entries[storageKey] = entry
 		store.mu.Unlock()
 
 		recorder := newBufferedResponseWriter()
@@ -97,7 +101,7 @@ func withIdempotency(next http.Handler, store *idempotencyStore) http.Handler {
 		entry.body = append([]byte(nil), recorder.body.Bytes()...)
 		entry.expiresAt = now.Add(store.ttl)
 		if recorder.status >= http.StatusInternalServerError {
-			delete(store.entries, key)
+			delete(store.entries, storageKey)
 		}
 		store.mu.Unlock()
 
@@ -127,8 +131,14 @@ func requestFingerprint(r *http.Request, body []byte) string {
 	_, _ = sum.Write([]byte{0})
 	_, _ = sum.Write([]byte(r.URL.Path))
 	_, _ = sum.Write([]byte{0})
+	_, _ = sum.Write([]byte(auth.UserID(r.Context())))
+	_, _ = sum.Write([]byte{0})
 	_, _ = sum.Write(body)
 	return hex.EncodeToString(sum.Sum(nil))
+}
+
+func scopedIdempotencyKey(r *http.Request, key string) string {
+	return auth.UserID(r.Context()) + "\x00" + key
 }
 
 func (s *idempotencyStore) pruneExpiredLocked(now time.Time) {
