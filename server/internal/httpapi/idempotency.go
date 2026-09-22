@@ -89,16 +89,16 @@ func withIdempotency(next http.Handler, store *idempotencyStore) http.Handler {
 		recorder := newBufferedResponseWriter()
 		next.ServeHTTP(recorder, r)
 
+		store.mu.Lock()
 		entry.status = recorder.status
 		entry.header = recorder.header.Clone()
 		entry.body = append([]byte(nil), recorder.body.Bytes()...)
 		entry.expiresAt = now.Add(store.ttl)
-
-		store.mu.Lock()
 		if recorder.status >= http.StatusInternalServerError {
 			delete(store.entries, key)
 		}
 		store.mu.Unlock()
+
 		close(entry.ready)
 
 		copyHeader(w.Header(), recorder.header)
