@@ -5,7 +5,6 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
-	"fmt"
 	"regexp"
 	"time"
 )
@@ -13,9 +12,9 @@ import (
 var checksumPattern = regexp.MustCompile(`^[a-fA-F0-9]{64}$`)
 
 var (
-	ErrNotFound         = errors.New("transfer not found")
+	ErrNotFound          = errors.New("transfer not found")
 	ErrInvalidTransition = errors.New("invalid transfer state transition")
-	ErrInvalidInput     = errors.New("invalid transfer input")
+	ErrInvalidInput      = errors.New("invalid transfer input")
 )
 
 type Repository interface {
@@ -29,14 +28,19 @@ type Publisher interface {
 	Publish(eventType string, payload any)
 }
 
+type SignedURLProvider interface {
+	UploadURL(transferID string) string
+	DownloadURL(transferID string) string
+}
+
 type Service struct {
 	repo      Repository
 	publisher Publisher
-	baseURL   string
+	urls      SignedURLProvider
 }
 
-func NewService(repo Repository, publisher Publisher, baseURL string) *Service {
-	return &Service{repo: repo, publisher: publisher, baseURL: baseURL}
+func NewService(repo Repository, publisher Publisher, urls SignedURLProvider) *Service {
+	return &Service{repo: repo, publisher: publisher, urls: urls}
 }
 
 func (s *Service) Create(ctx context.Context, in CreateInput) (Transfer, error) {
@@ -62,42 +66,61 @@ func (s *Service) Create(ctx context.Context, in CreateInput) (Transfer, error) 
 		ContentType:         in.ContentType,
 		SizeBytes:           in.SizeBytes,
 		SHA256:              in.SHA256,
-		UploadURL:           fmt.Sprintf("%s/dev-upload/%s", s.baseURL, id),
+		UploadURL:           s.urls.UploadURL(id),
 		CreatedAt:           now,
 		UpdatedAt:           now,
 	}
 	return s.repo.Create(ctx, t)
 }
 
-func (s *Service) List(ctx context.Context) ([]Transfer, error) { return s.repo.List(ctx) }
-func (s *Service) Get(ctx context.Context, id string) (Transfer, error) { return s.repo.Get(ctx, id) }
+func (s *Service) List(ctx context.Context) ([]Transfer, error) {
+	return s.repo.List(ctx)
+}
+
+func (s *Service) Get(ctx context.Context, id string) (Transfer, error) {
+	return s.repo.Get(ctx, id)
+}
 
 func (s *Service) MarkUploaded(ctx context.Context, id string) (Transfer, error) {
 	t, err := s.repo.Get(ctx, id)
-	if err != nil { return Transfer{}, err }
-	if t.Status != StatusUploading { return Transfer{}, ErrInvalidTransition }
+	if err != nil {
+		return Transfer{}, err
+	}
+	if t.Status != StatusUploading {
+		return Transfer{}, ErrInvalidTransition
+	}
 	t.Status = StatusReady
 	t.UploadURL = ""
-	t.DownloadURL = fmt.Sprintf("%s/dev-download/%s", s.baseURL, id)
+	t.DownloadURL = s.urls.DownloadURL(id)
 	t.UpdatedAt = time.Now().UTC()
 	t, err = s.repo.Update(ctx, t)
-	if err == nil { s.publisher.Publish("transfer.ready", t) }
+	if err == nil {
+		s.publisher.Publish("transfer.ready", t)
+	}
 	return t, err
 }
 
 func (s *Service) Complete(ctx context.Context, id string) (Transfer, error) {
 	t, err := s.repo.Get(ctx, id)
-	if err != nil { return Transfer{}, err }
-	if t.Status != StatusReady && t.Status != StatusDownloading { return Transfer{}, ErrInvalidTransition }
+	if err != nil {
+		return Transfer{}, err
+	}
+	if t.Status != StatusReady && t.Status != StatusDownloading {
+		return Transfer{}, ErrInvalidTransition
+	}
 	t.Status = StatusCompleted
 	t.UpdatedAt = time.Now().UTC()
 	t, err = s.repo.Update(ctx, t)
-	if err == nil { s.publisher.Publish("transfer.completed", t) }
+	if err == nil {
+		s.publisher.Publish("transfer.completed", t)
+	}
 	return t, err
 }
 
 func newID(prefix string) (string, error) {
 	var b [12]byte
-	if _, err := rand.Read(b[:]); err != nil { return "", err }
+	if _, err := rand.Read(b[:]); err != nil {
+		return "", err
+	}
 	return prefix + "_" + hex.EncodeToString(b[:]), nil
 }
