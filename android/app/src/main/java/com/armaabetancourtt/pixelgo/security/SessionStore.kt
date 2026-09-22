@@ -4,6 +4,7 @@ import android.content.Context
 import android.util.Base64
 import com.armaabetancourtt.pixelgo.model.TokenPair
 import org.json.JSONObject
+import java.util.UUID
 
 class SessionStore(
     context: Context,
@@ -62,6 +63,32 @@ class SessionStore(
 
     @Synchronized
     fun clear() {
-        preferences.edit().clear().apply()
+        preferences.edit()
+            .remove("iv")
+            .remove("ciphertext")
+            .apply()
+    }
+
+    @Synchronized
+    fun deviceId(userId: String): String? {
+        return preferences.getString("device.$userId", null)
+    }
+
+    @Synchronized
+    fun registrationKey(userId: String): String {
+        val keyName = "device.registration.$userId"
+        preferences.getString(keyName, null)?.let { return it }
+
+        val key = "device-register-" + UUID.randomUUID().toString().lowercase()
+        preferences.edit().putString(keyName, key).apply()
+        return key
+    }
+
+    @Synchronized
+    fun saveDeviceId(userId: String, deviceId: String) {
+        preferences.edit()
+            .putString("device.$userId", deviceId)
+            .remove("device.registration.$userId")
+            .apply()
     }
 }
