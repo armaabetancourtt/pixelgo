@@ -178,6 +178,9 @@ jobs:
 
           stop_api
           API_PID=""
+          grep -q '"msg":"pixelgo api stopped"' /tmp/pixelgo-api.log
+          echo "PASS: SIGTERM drained API cleanly"
+
           start_api
 
           python3 - <<'PY'
