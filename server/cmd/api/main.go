@@ -151,9 +151,13 @@ func main() {
 		IdleTimeout:       60 * time.Second,
 	}
 
-	log.Printf("pixelgo api listening on %s", addr)
+	logger.Info(
+		"pixelgo api listening",
+		"addr", addr,
+		"auth_required", requireAuth,
+	)
 	if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-		fatal(logger, "startup failed", "error", err)
+		fatal(logger, "api server stopped unexpectedly", "error", err)
 	}
 }
 
@@ -170,4 +174,29 @@ func envBool(key string, fallback bool) bool {
 		return fallback
 	}
 	return value == "1" || value == "true" || value == "yes" || value == "on"
+}
+
+
+func newLogger() *slog.Logger {
+	level := slog.LevelInfo
+	switch strings.ToLower(env("PIXELGO_LOG_LEVEL", "info")) {
+	case "debug":
+		level = slog.LevelDebug
+	case "warn", "warning":
+		level = slog.LevelWarn
+	case "error":
+		level = slog.LevelError
+	}
+
+	return slog.New(
+		slog.NewJSONHandler(
+			os.Stdout,
+			&slog.HandlerOptions{Level: level},
+		),
+	)
+}
+
+func fatal(logger *slog.Logger, message string, args ...any) {
+	logger.Error(message, args...)
+	os.Exit(1)
 }
