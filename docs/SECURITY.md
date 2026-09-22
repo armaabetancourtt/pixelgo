@@ -101,6 +101,14 @@ The repository intentionally contains no:
 
 Example local values are development-only.
 
+## Push credential boundaries
+
+APNs signing keys and FCM service-account JSON are deployment secrets and are never stored in the repository. The backend accepts them only through environment configuration, with base64 used as transport encoding rather than as encryption.
+
+Device push tokens are scoped to an authenticated device and can rotate without creating a new device record. Push payloads carry transfer identifiers and presentation metadata, never file bytes, signed storage URLs, access tokens or refresh tokens.
+
+A PostgreSQL outbox persists delivery intent. Provider errors are logged without logging provider credentials or device push-token values.
+
 ## Logging and operational telemetry
 
 Structured HTTP logs intentionally exclude:
