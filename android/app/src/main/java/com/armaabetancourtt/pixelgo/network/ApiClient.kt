@@ -135,7 +135,7 @@ class ApiClient(
             .put("destinationDeviceId", destinationDeviceId)
             .put("kind", kind)
             .put("displayName", displayName.take(255))
-            .put("contentType", contentType.take(255))
+            .put("contentType", contentType.take(120))
             .put("sizeBytes", payload.size)
             .put("sha256", checksum)
             .toString()
