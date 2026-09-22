@@ -77,6 +77,7 @@ private fun PixelGoApp(
     realtime: RealtimeClient
 ) {
     val scope = rememberCoroutineScope()
+    val context = LocalContext.current
 
     var didBootstrap by remember { mutableStateOf(false) }
     var isAuthenticated by remember { mutableStateOf(false) }
@@ -268,6 +269,30 @@ private fun PixelGoApp(
         }
     }
 
+    fun saveIncoming(transfer: Transfer, destinationUri: Uri) {
+        scope.launch {
+            isLoading = true
+            try {
+                val payload = api.downloadPayload(transfer)
+
+                withContext(Dispatchers.IO) {
+                    context.contentResolver.openOutputStream(destinationUri)?.use {
+                        it.write(payload)
+                    } ?: error("Could not open destination file.")
+                }
+
+                api.completeTransfer(transfer.id)
+                reload()
+            } catch (error: SessionExpiredException) {
+                clearAuthenticatedState(error.message)
+            } catch (error: Exception) {
+                errorMessage = error.message ?: "Could not save transfer."
+            } finally {
+                isLoading = false
+            }
+        }
+    }
+
     LaunchedEffect(Unit) {
         isAuthenticated = api.hasStoredSession()
         didBootstrap = true
@@ -327,6 +352,7 @@ private fun PixelGoApp(
                 isLoading = isLoading,
                 onSend = ::sendText,
                 onSendPayload = ::sendPayload,
+                onSaveIncoming = ::saveIncoming,
                 onRefresh = {
                     scope.launch {
                         receivePendingItems()
@@ -449,11 +475,28 @@ private fun HomeScreen(
         contentType: String,
         destinationDeviceId: String
     ) -> Unit,
+    onSaveIncoming: (Transfer, Uri) -> Unit,
     onRefresh: () -> Unit,
     onSignOut: () -> Unit
 ) {
     var showingSend by remember { mutableStateOf(false) }
+    var pendingSave by remember { mutableStateOf<Transfer?>(null) }
     val destinations = devices.filter { it.id != localDeviceId }
+    val readyBinaryTransfers = transfers.filter {
+        it.destinationDeviceId == localDeviceId &&
+            it.status == "ready" &&
+            it.kind in setOf("file", "photo")
+    }
+
+    val saveLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.CreateDocument("*/*")
+    ) { uri ->
+        val transfer = pendingSave
+        pendingSave = null
+        if (uri != null && transfer != null) {
+            onSaveIncoming(transfer, uri)
+        }
+    }
 
     LazyColumn(
         modifier = Modifier
@@ -578,6 +621,52 @@ private fun HomeScreen(
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                     Text(item.text)
+                }
+            }
+        }
+
+        if (readyBinaryTransfers.isNotEmpty()) {
+            item {
+                HorizontalDivider()
+                Text("READY TO SAVE", style = MaterialTheme.typography.labelLarge)
+            }
+
+            items(readyBinaryTransfers, key = { "ready-" + it.id }) { transfer ->
+                Row(
+                    Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Column(
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        Text(
+                            transfer.displayName
+                                ?: if (transfer.kind == "photo") "Photo" else "File",
+                            fontWeight = FontWeight.SemiBold
+                        )
+                        Text(
+                            formatBytes(transfer.sizeBytes),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+
+                    TextButton(
+                        onClick = {
+                            pendingSave = transfer
+                            saveLauncher.launch(
+                                transfer.displayName
+                                    ?: if (transfer.kind == "photo") {
+                                        "PIXEL-GO-Photo"
+                                    } else {
+                                        "PIXEL-GO-File"
+                                    }
+                            )
+                        },
+                        enabled = !isLoading
+                    ) {
+                        Text("SAVE")
+                    }
                 }
             }
         }
