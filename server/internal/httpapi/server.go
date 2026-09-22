@@ -13,17 +13,27 @@ import (
 
 	"github.com/armaabetancourtt/pixelgo/server/internal/devices"
 	"github.com/armaabetancourtt/pixelgo/server/internal/files"
+	"github.com/armaabetancourtt/pixelgo/server/internal/presence"
 	"github.com/armaabetancourtt/pixelgo/server/internal/realtime"
 	"github.com/armaabetancourtt/pixelgo/server/internal/transfers"
 )
 
 const maxDevBlobBytes int64 = 64 << 20
 
+type Option func(*Server)
+
+func WithPresence(store presence.Store) Option {
+	return func(s *Server) {
+		s.presence = store
+	}
+}
+
 type Server struct {
 	devices   *devices.Service
 	transfers *transfers.Service
 	hub       *realtime.Hub
 	files     *files.Service
+	presence  presence.Store
 }
 
 func New(
@@ -31,12 +41,16 @@ func New(
 	transferService *transfers.Service,
 	hub *realtime.Hub,
 	fileService *files.Service,
+	options ...Option,
 ) http.Handler {
 	s := &Server{
-		devices: devicesService,
+		devices:   devicesService,
 		transfers: transferService,
-		hub: hub,
-		files: fileService,
+		hub:       hub,
+		files:     fileService,
+	}
+	for _, option := range options {
+		option(s)
 	}
 
 	mux := http.NewServeMux()
@@ -50,6 +64,10 @@ func New(
 	mux.HandleFunc("POST /v1/transfers/{transferId}/uploaded", s.markUploaded)
 	mux.HandleFunc("POST /v1/transfers/{transferId}/complete", s.complete)
 	mux.Handle("GET /v1/events", hub)
+
+	if s.presence != nil {
+		mux.HandleFunc("GET /v1/presence/{deviceId}", s.getPresence)
+	}
 
 	// Development-only signed blob adapter. Production replaces this boundary
 	// with direct object-storage signed URLs.
@@ -97,6 +115,19 @@ func (s *Server) deleteDevice(w http.ResponseWriter, r *http.Request) {
 	default:
 		writeError(w, http.StatusInternalServerError, "internal_error", "could not delete device")
 	}
+}
+
+func (s *Server) getPresence(w http.ResponseWriter, r *http.Request) {
+	deviceID := r.PathValue("deviceId")
+	online, err := s.presence.IsOnline(r.Context(), deviceID)
+	if err != nil {
+		writeError(w, http.StatusServiceUnavailable, "presence_unavailable", "presence service is unavailable")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"deviceId": deviceID,
+		"online":   online,
+	})
 }
 
 func (s *Server) listTransfers(w http.ResponseWriter, r *http.Request) {
