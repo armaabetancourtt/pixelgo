@@ -45,7 +45,7 @@ func WithRateLimiter(limiter ratelimit.Limiter) Option {
 
 func WithAuth(service *auth.Service, required bool) Option {
 	return func(s *Server) {
-		s.authService = service
+		s.auth = service
 		s.authRequired = required
 	}
 }
@@ -58,7 +58,7 @@ type Server struct {
 	presence         presence.Store
 	idempotencyRedis *redis.Client
 	rateLimiter      ratelimit.Limiter
-	authService      *auth.Service
+	auth      *auth.Service
 	authRequired     bool
 }
 
@@ -81,7 +81,7 @@ func New(
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health", s.health)
-	if s.authService != nil {
+	if s.auth != nil {
 		mux.HandleFunc("POST /v1/auth/register", s.authRegister)
 		mux.HandleFunc("POST /v1/auth/login", s.authLogin)
 		mux.HandleFunc("POST /v1/auth/refresh", s.authRefresh)
@@ -117,8 +117,8 @@ func New(
 		handler = withIdempotency(handler, idempotency)
 	}
 
-	if s.authRequired && s.authService != nil {
-		handler = withAuthentication(handler, s.authService)
+	if s.authRequired && s.auth != nil {
+		handler = withAuthentication(handler, s.auth)
 	}
 	return handler
 }
