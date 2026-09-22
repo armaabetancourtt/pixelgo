@@ -15,6 +15,7 @@ type Device struct {
 	Name      string    `json:"name"`
 	Platform  string    `json:"platform"`
 	PushToken string    `json:"pushToken,omitempty"`
+	Online    bool      `json:"online"`
 	CreatedAt time.Time `json:"createdAt"`
 }
 
@@ -30,16 +31,29 @@ type Repository interface {
 	Delete(context.Context, string) error
 }
 
-type Service struct {
-	repo Repository
+type PresenceReader interface {
+	Online(context.Context, []string) (map[string]bool, error)
 }
 
-func NewService(repositories ...Repository) *Service {
-	var repo Repository = NewMemoryRepository()
-	if len(repositories) > 0 && repositories[0] != nil {
-		repo = repositories[0]
+type Service struct {
+	repo     Repository
+	presence PresenceReader
+}
+
+func NewService(repo Repository, presence ...PresenceReader) *Service {
+	if repo == nil {
+		repo = NewMemoryRepository()
 	}
-	return &Service{repo: repo}
+
+	var reader PresenceReader
+	if len(presence) > 0 {
+		reader = presence[0]
+	}
+
+	return &Service{
+		repo:     repo,
+		presence: reader,
+	}
 }
 
 func (s *Service) Register(ctx context.Context, in RegisterInput) (Device, error) {
@@ -62,7 +76,27 @@ func (s *Service) Register(ctx context.Context, in RegisterInput) (Device, error
 }
 
 func (s *Service) List(ctx context.Context) ([]Device, error) {
-	return s.repo.List(ctx)
+	items, err := s.repo.List(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if s.presence == nil || len(items) == 0 {
+		return items, nil
+	}
+
+	ids := make([]string, 0, len(items))
+	for _, device := range items {
+		ids = append(ids, device.ID)
+	}
+
+	online, err := s.presence.Online(ctx, ids)
+	if err != nil {
+		return nil, err
+	}
+	for i := range items {
+		items[i].Online = online[items[i].ID]
+	}
+	return items, nil
 }
 
 func (s *Service) Delete(ctx context.Context, id string) error {
