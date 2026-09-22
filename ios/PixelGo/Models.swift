@@ -17,6 +17,10 @@ struct RefreshRequest: Codable {
     let refreshToken: String
 }
 
+struct PushTokenRequest: Codable {
+    let pushToken: String
+}
+
 struct RegisterDeviceRequest: Codable {
     let name: String
     let platform: String
