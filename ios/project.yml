@@ -19,7 +19,11 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: com.armaabetancourtt.pixelgo
         CODE_SIGN_STYLE: Automatic
         CODE_SIGN_ENTITLEMENTS: PixelGo/PixelGo.entitlements
-        APS_ENVIRONMENT: development
+      configs:
+        Debug:
+          APS_ENVIRONMENT: development
+        Release:
+          APS_ENVIRONMENT: production
     scheme:
       testTargets:
         - PixelGoTests
