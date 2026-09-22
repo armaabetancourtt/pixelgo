@@ -17,6 +17,7 @@ ios/DerivedData/
 # Android / Gradle
 android/.gradle/
 android/local.properties
+android/app/google-services.json
 android/**/build/
 *.jks
 *.keystore
