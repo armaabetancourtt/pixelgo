@@ -31,7 +31,6 @@ actor APIClient {
     private let encoder = JSONEncoder()
     private var refreshTask: Task<TokenPair, Error>?
     private var webSocketTask: URLSessionWebSocketTask?
-    private var refreshTask: Task<TokenPair, Error>?
 
     init(
         baseURL: URL,
