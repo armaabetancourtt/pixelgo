@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"encoding/base64"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
@@ -12,6 +14,7 @@ import (
 	"github.com/armaabetancourtt/pixelgo/server/internal/devices"
 	"github.com/armaabetancourtt/pixelgo/server/internal/files"
 	"github.com/armaabetancourtt/pixelgo/server/internal/httpapi"
+	"github.com/armaabetancourtt/pixelgo/server/internal/notifications"
 	"github.com/armaabetancourtt/pixelgo/server/internal/observability"
 	"github.com/armaabetancourtt/pixelgo/server/internal/platform/postgresdb"
 	"github.com/armaabetancourtt/pixelgo/server/internal/platform/redisdb"
@@ -38,6 +41,7 @@ func main() {
 	var authRepo auth.Repository = auth.NewMemoryRepository()
 	var deviceRepo devices.Repository = devices.NewMemoryRepository()
 	var transferRepo transfers.Repository = transfers.NewMemoryRepository()
+	var notificationRepo notifications.Repository
 	readinessChecks := make([]observability.Check, 0, 3)
 
 	if databaseURL := os.Getenv("DATABASE_URL"); databaseURL != "" {
@@ -148,6 +152,24 @@ func main() {
 		2*time.Second,
 	)
 
+	pushRouter, err := buildPushRouter()
+	if err != nil {
+		fatal(logger, "push configuration invalid", "error", err)
+	}
+	if notificationRepo != nil && pushRouter.Configured() {
+		worker := notifications.NewWorker(notificationRepo, pushRouter, logger)
+		go worker.Run(context.Background())
+		logger.Info(
+			"push worker configured",
+			"apns", pushRouter.APNs != nil,
+			"fcm", pushRouter.FCM != nil,
+		)
+	} else if pushRouter.Configured() {
+		logger.Warn("push providers configured without PostgreSQL; durable outbox disabled")
+	} else {
+		logger.Info("push delivery disabled", "reason", "no provider credentials")
+	}
+
 	authService := auth.NewService(authRepo, []byte(jwtSecret))
 	deviceService := devices.NewService(deviceRepo)
 	transferService := transfers.NewService(transferRepo, hub, fileService)
@@ -227,4 +249,41 @@ func newLogger() *slog.Logger {
 func fatal(logger *slog.Logger, message string, args ...any) {
 	logger.Error(message, args...)
 	os.Exit(1)
+}
+
+
+func buildPushRouter() (notifications.Router, error) {
+	var router notifications.Router
+
+	if keyB64 := strings.TrimSpace(os.Getenv("APNS_PRIVATE_KEY_B64")); keyB64 != "" {
+		keyPEM, err := base64.StdEncoding.DecodeString(keyB64)
+		if err != nil {
+			return router, fmt.Errorf("decode APNS_PRIVATE_KEY_B64: %w", err)
+		}
+		provider, err := notifications.NewAPNSProvider(notifications.APNSConfig{
+			KeyID:         os.Getenv("APNS_KEY_ID"),
+			TeamID:        os.Getenv("APNS_TEAM_ID"),
+			Topic:         env("APNS_TOPIC", "com.armaabetancourtt.pixelgo"),
+			PrivateKeyPEM: string(keyPEM),
+			Sandbox:       envBool("APNS_SANDBOX", false),
+		})
+		if err != nil {
+			return router, err
+		}
+		router.APNs = provider
+	}
+
+	if accountB64 := strings.TrimSpace(os.Getenv("FCM_SERVICE_ACCOUNT_JSON_B64")); accountB64 != "" {
+		accountJSON, err := base64.StdEncoding.DecodeString(accountB64)
+		if err != nil {
+			return router, fmt.Errorf("decode FCM_SERVICE_ACCOUNT_JSON_B64: %w", err)
+		}
+		provider, err := notifications.NewFCMProvider(accountJSON)
+		if err != nil {
+			return router, err
+		}
+		router.FCM = provider
+	}
+
+	return router, nil
 }
