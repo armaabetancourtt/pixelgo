@@ -98,6 +98,7 @@ func New(
 	}
 	mux.HandleFunc("GET /v1/devices", s.listDevices)
 	mux.HandleFunc("POST /v1/devices", s.registerDevice)
+	mux.HandleFunc("PUT /v1/devices/{deviceId}/push-token", s.updateDevicePushToken)
 	mux.HandleFunc("DELETE /v1/devices/{deviceId}", s.deleteDevice)
 	mux.HandleFunc("GET /v1/transfers", s.listTransfers)
 	mux.HandleFunc("POST /v1/transfers", s.createTransfer)
@@ -158,6 +159,28 @@ func (s *Server) registerDevice(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusCreated, d)
+}
+
+func (s *Server) updateDevicePushToken(w http.ResponseWriter, r *http.Request) {
+	var in devices.PushTokenInput
+	if err := decode(r, &in); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_request", err.Error())
+		return
+	}
+
+	device, err := s.devices.UpdatePushToken(
+		r.Context(),
+		r.PathValue("deviceId"),
+		in.PushToken,
+	)
+	switch {
+	case err == nil:
+		writeJSON(w, http.StatusOK, device)
+	case errors.Is(err, devices.ErrNotFound):
+		writeError(w, http.StatusNotFound, "not_found", "device not found")
+	default:
+		writeError(w, http.StatusBadRequest, "invalid_push_token", err.Error())
+	}
 }
 
 func (s *Server) deleteDevice(w http.ResponseWriter, r *http.Request) {
