@@ -1,25 +1,44 @@
 package httpapi
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/armaabetancourtt/pixelgo/server/internal/devices"
+	"github.com/armaabetancourtt/pixelgo/server/internal/files"
 	"github.com/armaabetancourtt/pixelgo/server/internal/realtime"
 	"github.com/armaabetancourtt/pixelgo/server/internal/transfers"
 )
+
+const maxDevBlobBytes int64 = 64 << 20
 
 type Server struct {
 	devices   *devices.Service
 	transfers *transfers.Service
 	hub       *realtime.Hub
+	files     *files.Service
 }
 
-func New(devicesService *devices.Service, transferService *transfers.Service, hub *realtime.Hub) http.Handler {
-	s := &Server{devices: devicesService, transfers: transferService, hub: hub}
+func New(
+	devicesService *devices.Service,
+	transferService *transfers.Service,
+	hub *realtime.Hub,
+	fileService *files.Service,
+) http.Handler {
+	s := &Server{
+		devices: devicesService,
+		transfers: transferService,
+		hub: hub,
+		files: fileService,
+	}
+
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health", s.health)
 	mux.HandleFunc("GET /v1/devices", s.listDevices)
@@ -32,8 +51,13 @@ func New(devicesService *devices.Service, transferService *transfers.Service, hu
 	mux.HandleFunc("POST /v1/transfers/{transferId}/complete", s.complete)
 	mux.Handle("GET /v1/events", hub)
 
+	// Development-only signed blob adapter. Production replaces this boundary
+	// with direct object-storage signed URLs.
+	mux.HandleFunc("PUT /dev-upload/{transferId}", s.devUpload)
+	mux.HandleFunc("GET /dev-download/{transferId}", s.devDownload)
+
 	idempotency := newIdempotencyStore(24 * time.Hour)
-	return withJSON(withIdempotency(mux, idempotency))
+	return withIdempotency(mux, idempotency)
 }
 
 func (s *Server) health(w http.ResponseWriter, _ *http.Request) {
@@ -99,13 +123,107 @@ func (s *Server) getTransfer(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) markUploaded(w http.ResponseWriter, r *http.Request) {
-	t, err := s.transfers.MarkUploaded(r.Context(), r.PathValue("transferId"))
+	transferID := r.PathValue("transferId")
+	if !s.files.Exists(transferID) {
+		writeError(w, http.StatusConflict, "upload_missing", "payload has not been uploaded")
+		return
+	}
+
+	t, err := s.transfers.MarkUploaded(r.Context(), transferID)
 	s.writeTransferResult(w, t, err)
 }
 
 func (s *Server) complete(w http.ResponseWriter, r *http.Request) {
 	t, err := s.transfers.Complete(r.Context(), r.PathValue("transferId"))
 	s.writeTransferResult(w, t, err)
+}
+
+func (s *Server) devUpload(w http.ResponseWriter, r *http.Request) {
+	transferID := r.PathValue("transferId")
+	if err := s.files.Verify(
+		"upload",
+		transferID,
+		r.URL.Query().Get("exp"),
+		r.URL.Query().Get("sig"),
+	); err != nil {
+		writeError(w, http.StatusForbidden, "invalid_upload_url", err.Error())
+		return
+	}
+
+	t, err := s.transfers.Get(r.Context(), transferID)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "not_found", "transfer not found")
+		return
+	}
+	if t.Status != transfers.StatusUploading {
+		writeError(w, http.StatusConflict, "invalid_transition", "transfer is not accepting uploads")
+		return
+	}
+	if t.SizeBytes > maxDevBlobBytes {
+		writeError(w, http.StatusRequestEntityTooLarge, "dev_blob_too_large", "local in-memory adapter is limited to 64 MiB")
+		return
+	}
+
+	payload, err := io.ReadAll(io.LimitReader(r.Body, t.SizeBytes+1))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_upload", "could not read upload")
+		return
+	}
+	if int64(len(payload)) != t.SizeBytes {
+		writeError(w, http.StatusUnprocessableEntity, "size_mismatch", "uploaded byte count does not match transfer metadata")
+		return
+	}
+
+	sum := sha256.Sum256(payload)
+	actualChecksum := hex.EncodeToString(sum[:])
+	if !strings.EqualFold(actualChecksum, t.SHA256) {
+		writeError(w, http.StatusUnprocessableEntity, "checksum_mismatch", "uploaded payload failed SHA-256 verification")
+		return
+	}
+
+	s.files.Put(transferID, payload)
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) devDownload(w http.ResponseWriter, r *http.Request) {
+	transferID := r.PathValue("transferId")
+	if err := s.files.Verify(
+		"download",
+		transferID,
+		r.URL.Query().Get("exp"),
+		r.URL.Query().Get("sig"),
+	); err != nil {
+		writeError(w, http.StatusForbidden, "invalid_download_url", err.Error())
+		return
+	}
+
+	t, err := s.transfers.Get(r.Context(), transferID)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "not_found", "transfer not found")
+		return
+	}
+	if t.Status != transfers.StatusReady &&
+		t.Status != transfers.StatusDownloading &&
+		t.Status != transfers.StatusCompleted {
+		writeError(w, http.StatusConflict, "invalid_transition", "transfer is not ready for download")
+		return
+	}
+
+	payload, err := s.files.Get(transferID)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "payload_not_found", "transfer payload is unavailable")
+		return
+	}
+
+	contentType := t.ContentType
+	if contentType == "" {
+		contentType = "application/octet-stream"
+	}
+	w.Header().Set("Content-Type", contentType)
+	w.Header().Set("Content-Length", strconv.Itoa(len(payload)))
+	w.Header().Set("Cache-Control", "private, no-store")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(payload)
 }
 
 func (s *Server) writeTransferResult(w http.ResponseWriter, t transfers.Transfer, err error) {
@@ -138,6 +256,7 @@ func withJSON(next http.Handler) http.Handler {
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {
+	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(v)
 }
