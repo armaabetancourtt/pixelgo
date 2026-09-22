@@ -65,7 +65,12 @@ func (s *Server) health(w http.ResponseWriter, _ *http.Request) {
 }
 
 func (s *Server) listDevices(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, s.devices.List(r.Context()))
+	items, err := s.devices.List(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal_error", "could not list devices")
+		return
+	}
+	writeJSON(w, http.StatusOK, items)
 }
 
 func (s *Server) registerDevice(w http.ResponseWriter, r *http.Request) {
@@ -83,11 +88,15 @@ func (s *Server) registerDevice(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) deleteDevice(w http.ResponseWriter, r *http.Request) {
-	if err := s.devices.Delete(r.Context(), r.PathValue("deviceId")); err != nil {
+	err := s.devices.Delete(r.Context(), r.PathValue("deviceId"))
+	switch {
+	case err == nil:
+		w.WriteHeader(http.StatusNoContent)
+	case errors.Is(err, devices.ErrNotFound):
 		writeError(w, http.StatusNotFound, "not_found", "device not found")
-		return
+	default:
+		writeError(w, http.StatusInternalServerError, "internal_error", "could not delete device")
 	}
-	w.WriteHeader(http.StatusNoContent)
 }
 
 func (s *Server) listTransfers(w http.ResponseWriter, r *http.Request) {
