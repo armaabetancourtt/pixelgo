@@ -62,7 +62,7 @@ jobs:
       - name: Build unsigned release bundle
         run: gradle -p android --no-daemon :app:bundleRelease
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: pixelgo-android-${{ github.ref_name }}
           path: android/app/build/outputs/bundle/release/*.aab
@@ -94,7 +94,7 @@ jobs:
           tar -czf "${{ github.workspace }}/PixelGo.xcarchive.tar.gz" \
             -C "${{ github.workspace }}" PixelGo.xcarchive
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: pixelgo-ios-${{ github.ref_name }}
           path: PixelGo.xcarchive.tar.gz
