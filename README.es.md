@@ -65,7 +65,7 @@ PIXEL GO comparte **cero implementación de UI** entre plataformas.
 | Persistencia | frontera nativa | Room |
 | Lifecycle | app / scene lifecycle | activity / process lifecycle |
 
-Actualmente ambas apps cargan dispositivos registrados y transferencias recientes desde **el mismo backend Go**, pero siguen siendo implementaciones completamente separadas.
+Actualmente ambas apps cargan dispositivos, transferencias recientes y **presencia Online / Offline respaldada por Redis** desde el mismo backend Go, pero siguen siendo implementaciones completamente separadas.
 
 ## Lifecycle real de transferencia
 
@@ -109,7 +109,9 @@ PIXEL GO ya implementa `Idempotency-Key` para mutaciones POST:
 - un 5xx no queda guardado como operación exitosa;
 - un replay responde con `Idempotency-Replayed: true`.
 
-Hoy el store de idempotencia vive en memoria. En producción distribuida debe moverse a Redis/PostgreSQL para sobrevivir reinicios y coordinar múltiples réplicas.
+Cuando Redis está configurado, la idempotencia ya es **distribuida entre réplicas del API**. Redis coordina un lock con owner token y conserva la respuesta replayable por 24 horas. Dos retries idénticos pueden caer en dos instancias distintas y aun así ejecutar una sola mutación. Si Redis está configurado pero no está disponible, esa capa falla cerrada con `503` antes que arriesgar un duplicado.
+
+Sin Redis, desarrollo/tests conservan la misma semántica mediante un store local en proceso.
 
 ## Arquitectura
 
@@ -135,6 +137,19 @@ flowchart LR
 
 El backend sigue la idea de **modular monolith**. No hay microservicios inventados sólo para hacer el diagrama más impresionante.
 
+### Estado durable vs. efímero
+
+La separación ya está implementada:
+
+- **PostgreSQL** guarda devices y metadata de transfers de forma durable;
+- **Redis TTL presence** representa si un dispositivo parece alcanzable ahora;
+- **Redis Pub/Sub** distribuye eventos realtime entre varias instancias del API;
+- **Redis idempotency** coordina retries seguros entre réplicas;
+- **Redis rate limiting** comparte budgets de requests entre réplicas;
+- las signed URLs se regeneran desde el estado y **no se persisten** como credenciales durables.
+
+CI ejecuta el binario con PostgreSQL + Redis reales y verifica que el estado durable sobreviva un restart del API.
+
 ## Contrato API
 
 `contracts/openapi.yaml` es la frontera de compatibilidad entre software que no se despliega al mismo ritmo.
@@ -147,6 +162,7 @@ GET    /health
 GET    /v1/devices
 POST   /v1/devices
 DELETE /v1/devices/{deviceId}
+GET    /v1/presence/{deviceId}
 
 POST   /v1/transfers
 GET    /v1/transfers
@@ -154,7 +170,7 @@ GET    /v1/transfers/{transferId}
 POST   /v1/transfers/{transferId}/uploaded
 POST   /v1/transfers/{transferId}/complete
 
-GET    /v1/events
+GET    /v1/events?deviceId=...
 ```
 
 El servidor de desarrollo además expone `/dev-upload/{id}` y `/dev-download/{id}` mediante URLs firmadas. Son parte del adapter local, no una afirmación de cómo se servirían archivos en producción.
@@ -168,6 +184,7 @@ La implementación actual incluye:
 - Swift 6 + SwiftUI;
 - API client actor-based con `URLSession`;
 - devices y transfers reales desde backend;
+- estado Online / Offline desde presence respaldada por Redis;
 - Keychain;
 - BackgroundTasks;
 - frontera de permisos de notificaciones;
@@ -183,6 +200,7 @@ La implementación actual incluye:
 - Kotlin + Jetpack Compose;
 - Coroutines;
 - devices y transfers reales desde el mismo backend;
+- estado Online / Offline desde el mismo endpoint de presence;
 - Android Keystore;
 - WorkManager;
 - frontera Room;
@@ -248,7 +266,13 @@ Ya se prueban invariantes importantes:
 - validación de tamaño;
 - validación SHA-256;
 - download de exactamente los mismos bytes;
-- estado final `completed`.
+- estado final `completed`;
+- persistencia PostgreSQL después de reiniciar el API;
+- lifecycle de presence TTL en Redis;
+- fan-out Redis Pub/Sub;
+- idempotencia entre handlers/réplicas independientes;
+- request budgets compartidos en Redis;
+- respuesta `429` + `Retry-After`.
 
 El E2E de CI simula los roles iPhone/Android a través del API. **Todavía no afirma automatización sobre dos dispositivos físicos.**
 
@@ -259,7 +283,7 @@ El E2E de CI simula los roles iPhone/Android a través del API. **Todavía no af
 - OpenAPI versionado;
 - SwiftUI nativo;
 - Compose nativo;
-- ambas apps leyendo el mismo backend;
+- ambas apps leyendo el mismo backend y presence real;
 - backend Go;
 - state machine de transfers;
 - WebSocket hub;
@@ -269,7 +293,12 @@ El E2E de CI simula los roles iPhone/Android a través del API. **Todavía no af
 - idempotencia con coalescing concurrente;
 - Keychain / Keystore;
 - BackgroundTasks / WorkManager;
-- schema PostgreSQL;
+- repositories PostgreSQL conectados al runtime;
+- persistencia validada a través de restart del API;
+- presence Redis con TTL/heartbeats;
+- Redis Pub/Sub para realtime distribuido;
+- idempotencia Redis cross-replica;
+- rate limiting Redis compartido;
 - Postgres + Redis + MinIO para entorno local;
 - CI multiplataforma;
 - E2E binario real;
@@ -279,8 +308,6 @@ El E2E de CI simula los roles iPhone/Android a través del API. **Todavía no af
 **Todavía no se presume como terminado:**
 
 - auth + refresh rotation;
-- repositorios PostgreSQL conectados al runtime;
-- presence/idempotencia distribuidas con Redis;
 - adapter productivo de signed URLs S3/MinIO;
 - APNs / FCM reales;
 - clientes Swift/Kotlin generados desde OpenAPI;
