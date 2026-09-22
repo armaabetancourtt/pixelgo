@@ -2,13 +2,32 @@ package transfers
 
 import (
 	"context"
+	"encoding/json"
 	"io/fs"
 	"testing"
 )
 
-type noOpPublisher struct{}
+type publishedEvent struct {
+	deviceIDs []string
+	eventType string
+	payload   any
+}
 
-func (noOpPublisher) Publish(string, any) {}
+type noOpPublisher struct {
+	events []publishedEvent
+}
+
+func (p *noOpPublisher) PublishToDevices(
+	deviceIDs []string,
+	eventType string,
+	payload any,
+) {
+	p.events = append(p.events, publishedEvent{
+		deviceIDs: append([]string(nil), deviceIDs...),
+		eventType: eventType,
+		payload:   payload,
+	})
+}
 
 type fakeURLs struct {
 	uploaded bool
@@ -45,7 +64,8 @@ const checksum = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 
 func TestTransferLifecycle(t *testing.T) {
 	urls := fakeURLs{uploaded: true, size: 12, checksum: checksum}
-	s := NewService(NewMemoryRepository(), noOpPublisher{}, urls)
+	publisher := &noOpPublisher{}
+	s := NewService(NewMemoryRepository(), publisher, urls)
 
 	created, err := s.Create(context.Background(), CreateInput{
 		SourceDeviceID: "ios-1",
@@ -74,6 +94,34 @@ func TestTransferLifecycle(t *testing.T) {
 	if ready.DownloadURL == "" {
 		t.Fatal("expected signed download URL")
 	}
+	if len(publisher.events) != 1 {
+		t.Fatalf("expected one ready event, got %d", len(publisher.events))
+	}
+	readyEvent := publisher.events[0]
+	if readyEvent.eventType != "transfer.ready" {
+		t.Fatalf("unexpected event type %q", readyEvent.eventType)
+	}
+	if len(readyEvent.deviceIDs) != 1 ||
+		readyEvent.deviceIDs[0] != "android-1" {
+		t.Fatalf("ready event must target destination, got %#v", readyEvent.deviceIDs)
+	}
+	encoded, err := json.Marshal(readyEvent.payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(encoded) == "" {
+		t.Fatal("expected realtime payload")
+	}
+	var eventPayload map[string]any
+	if err := json.Unmarshal(encoded, &eventPayload); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := eventPayload["downloadUrl"]; ok {
+		t.Fatal("realtime payload must not contain signed download URL")
+	}
+	if _, ok := eventPayload["uploadUrl"]; ok {
+		t.Fatal("realtime payload must not contain signed upload URL")
+	}
 
 	completed, err := s.Complete(context.Background(), created.ID)
 	if err != nil {
@@ -82,12 +130,26 @@ func TestTransferLifecycle(t *testing.T) {
 	if completed.Status != StatusCompleted {
 		t.Fatalf("expected completed, got %s", completed.Status)
 	}
+	if len(publisher.events) != 2 {
+		t.Fatalf("expected completed event, got %d events", len(publisher.events))
+	}
+	completedEvent := publisher.events[1]
+	if completedEvent.eventType != "transfer.completed" {
+		t.Fatalf("unexpected completed event %q", completedEvent.eventType)
+	}
+	if len(completedEvent.deviceIDs) != 1 ||
+		completedEvent.deviceIDs[0] != "ios-1" {
+		t.Fatalf(
+			"completed event must target source, got %#v",
+			completedEvent.deviceIDs,
+		)
+	}
 }
 
 func TestCannotMarkReadyWithoutUploadedObject(t *testing.T) {
 	s := NewService(
 		NewMemoryRepository(),
-		noOpPublisher{},
+		&noOpPublisher{},
 		fakeURLs{},
 	)
 	created, err := s.Create(context.Background(), CreateInput{
@@ -115,7 +177,7 @@ func TestCannotMarkReadyWithWrongUploadedIntegrity(t *testing.T) {
 		size:     5,
 		checksum: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
 	}
-	s := NewService(NewMemoryRepository(), noOpPublisher{}, urls)
+	s := NewService(NewMemoryRepository(), &noOpPublisher{}, urls)
 	created, err := s.Create(context.Background(), CreateInput{
 		SourceDeviceID: "ios-1",
 		DestinationDeviceID: "android-1",
@@ -138,7 +200,7 @@ func TestCannotMarkReadyWithWrongUploadedIntegrity(t *testing.T) {
 func TestCannotCompleteBeforeUpload(t *testing.T) {
 	s := NewService(
 		NewMemoryRepository(),
-		noOpPublisher{},
+		&noOpPublisher{},
 		fakeURLs{},
 	)
 	created, err := s.Create(context.Background(), CreateInput{
