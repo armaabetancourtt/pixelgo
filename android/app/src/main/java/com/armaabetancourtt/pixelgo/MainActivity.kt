@@ -1,9 +1,14 @@
 package com.armaabetancourtt.pixelgo
 
+import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.provider.OpenableColumns
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
+import androidx.activity.result.PickVisualMediaRequest
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -31,6 +36,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
@@ -41,8 +47,10 @@ import com.armaabetancourtt.pixelgo.network.ApiClient
 import com.armaabetancourtt.pixelgo.network.RealtimeClient
 import com.armaabetancourtt.pixelgo.network.SessionExpiredException
 import com.armaabetancourtt.pixelgo.security.SessionStore
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import kotlin.math.roundToInt
 
 class MainActivity : ComponentActivity() {
@@ -228,6 +236,38 @@ private fun PixelGoApp(
         }
     }
 
+    fun sendPayload(
+        payload: ByteArray,
+        kind: String,
+        displayName: String,
+        contentType: String,
+        destinationDeviceId: String
+    ) {
+        val sourceDeviceId = localDeviceId ?: return
+        if (payload.isEmpty()) return
+
+        scope.launch {
+            isLoading = true
+            try {
+                api.sendPayload(
+                    payload = payload,
+                    kind = kind,
+                    displayName = displayName,
+                    contentType = contentType,
+                    sourceDeviceId = sourceDeviceId,
+                    destinationDeviceId = destinationDeviceId
+                )
+                reload()
+            } catch (error: SessionExpiredException) {
+                clearAuthenticatedState(error.message)
+            } catch (error: Exception) {
+                errorMessage = error.message ?: "Could not send transfer."
+            } finally {
+                isLoading = false
+            }
+        }
+    }
+
     LaunchedEffect(Unit) {
         isAuthenticated = api.hasStoredSession()
         didBootstrap = true
@@ -286,6 +326,7 @@ private fun PixelGoApp(
                 errorMessage = errorMessage,
                 isLoading = isLoading,
                 onSend = ::sendText,
+                onSendPayload = ::sendPayload,
                 onRefresh = {
                     scope.launch {
                         receivePendingItems()
@@ -401,6 +442,13 @@ private fun HomeScreen(
     errorMessage: String?,
     isLoading: Boolean,
     onSend: (text: String, destinationDeviceId: String) -> Unit,
+    onSendPayload: (
+        payload: ByteArray,
+        kind: String,
+        displayName: String,
+        contentType: String,
+        destinationDeviceId: String
+    ) -> Unit,
     onRefresh: () -> Unit,
     onSignOut: () -> Unit
 ) {
@@ -571,27 +619,78 @@ private fun HomeScreen(
     }
 
     if (showingSend && destinations.isNotEmpty()) {
-        SendTextDialog(
+        SendDialog(
             destinations = destinations,
             onDismiss = { showingSend = false },
-            onSend = { text, destination ->
+            onSendText = { text, destination ->
                 showingSend = false
                 onSend(text, destination)
+            },
+            onSendPayload = { payload, kind, name, contentType, destination ->
+                showingSend = false
+                onSendPayload(payload, kind, name, contentType, destination)
             }
         )
     }
 }
 
 @Composable
-private fun SendTextDialog(
+private fun SendDialog(
     destinations: List<PixelDevice>,
     onDismiss: () -> Unit,
-    onSend: (String, String) -> Unit
+    onSendText: (String, String) -> Unit,
+    onSendPayload: (ByteArray, String, String, String, String) -> Unit
 ) {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+
     var selectedDeviceId by remember {
         mutableStateOf(destinations.first().id)
     }
     var text by remember { mutableStateOf("") }
+    var pickerError by remember { mutableStateOf<String?>(null) }
+
+    suspend fun sendUri(uri: Uri, kind: String) {
+        try {
+            val payload = withContext(Dispatchers.IO) {
+                context.contentResolver.openInputStream(uri)?.use {
+                    it.readBytes()
+                } ?: error("Could not read selected item.")
+            }
+            val contentType = context.contentResolver.getType(uri)
+                ?: "application/octet-stream"
+            val displayName = queryDisplayName(
+                context.contentResolver,
+                uri
+            ) ?: if (kind == "photo") "Photo" else "File"
+
+            onSendPayload(
+                payload,
+                kind,
+                displayName,
+                contentType,
+                selectedDeviceId
+            )
+        } catch (error: Exception) {
+            pickerError = error.message ?: "Could not read selected item."
+        }
+    }
+
+    val photoPicker = rememberLauncherForActivityResult(
+        ActivityResultContracts.PickVisualMedia()
+    ) { uri ->
+        if (uri != null) {
+            scope.launch { sendUri(uri, "photo") }
+        }
+    }
+
+    val filePicker = rememberLauncherForActivityResult(
+        ActivityResultContracts.GetContent()
+    ) { uri ->
+        if (uri != null) {
+            scope.launch { sendUri(uri, "file") }
+        }
+    }
 
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -622,35 +721,86 @@ private fun SendTextDialog(
                     value = text,
                     onValueChange = { text = it },
                     label = { Text("Text or link") },
-                    minLines = 4,
+                    minLines = 3,
                     modifier = Modifier.fillMaxWidth()
                 )
 
-                Spacer(Modifier.height(8.dp))
+                TextButton(
+                    onClick = {
+                        onSendText(text, selectedDeviceId)
+                    },
+                    enabled = text.trim().isNotEmpty(),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text("SEND TEXT / LINK", fontWeight = FontWeight.Bold)
+                }
+
+                HorizontalDivider()
+                Spacer(Modifier.height(4.dp))
+
+                TextButton(
+                    onClick = {
+                        photoPicker.launch(
+                            PickVisualMediaRequest(
+                                ActivityResultContracts.PickVisualMedia.ImageOnly
+                            )
+                        )
+                    },
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text("CHOOSE PHOTO")
+                }
+
+                TextButton(
+                    onClick = { filePicker.launch("*/*") },
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text("CHOOSE FILE")
+                }
 
                 Text(
-                    "HTTP/HTTPS URLs are detected automatically as link transfers.",
+                    "Selected bytes upload directly to object storage through a short-lived signed URL.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
+
+                pickerError?.let {
+                    Spacer(Modifier.height(6.dp))
+                    Text(
+                        it,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
             }
         },
-        confirmButton = {
-            TextButton(
-                onClick = {
-                    onSend(text, selectedDeviceId)
-                },
-                enabled = text.trim().isNotEmpty()
-            ) {
-                Text("SEND", fontWeight = FontWeight.Bold)
-            }
-        },
+        confirmButton = {},
         dismissButton = {
             TextButton(onClick = onDismiss) {
                 Text("Cancel")
             }
         }
     )
+}
+
+private fun queryDisplayName(
+    resolver: android.content.ContentResolver,
+    uri: Uri
+): String? {
+    return resolver.query(
+        uri,
+        arrayOf(OpenableColumns.DISPLAY_NAME),
+        null,
+        null,
+        null
+    )?.use { cursor ->
+        val index = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+        if (index >= 0 && cursor.moveToFirst()) {
+            cursor.getString(index)
+        } else {
+            null
+        }
+    }
 }
 
 @Composable
