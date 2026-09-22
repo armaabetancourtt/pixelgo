@@ -3,7 +3,7 @@ package com.armaabetancourtt.pixelgo.network
 import com.armaabetancourtt.pixelgo.model.PixelDevice
 import com.armaabetancourtt.pixelgo.model.TokenPair
 import com.armaabetancourtt.pixelgo.model.Transfer
-import com.armaabetancourtt.pixelgo.security.SecureTokenStore
+import com.armaabetancourtt.pixelgo.security.SessionStore
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -15,27 +15,35 @@ import java.net.URL
 
 class ApiClient(
     private val baseUrl: String,
-    private val tokenStore: SecureTokenStore
+    private val sessionStore: SessionStore
 ) {
     private val refreshMutex = Mutex()
 
-    fun hasStoredSession(): Boolean = tokenStore.load() != null
-
-    fun signOut() {
-        tokenStore.clear()
-    }
-
-    suspend fun health() {
-        val result = execute(method = "GET", path = "/health")
-        requireSuccess(result)
-    }
+    fun hasStoredSession(): Boolean = sessionStore.load() != null
 
     suspend fun register(email: String, password: String) {
-        authenticate("/v1/auth/register", email, password)
+        val pair = publicAuthPost(
+            "/v1/auth/register",
+            JSONObject().put("email", email).put("password", password)
+        )
+        sessionStore.save(pair)
     }
 
     suspend fun login(email: String, password: String) {
-        authenticate("/v1/auth/login", email, password)
+        val pair = publicAuthPost(
+            "/v1/auth/login",
+            JSONObject().put("email", email).put("password", password)
+        )
+        sessionStore.save(pair)
+    }
+
+    fun signOut() {
+        sessionStore.clear()
+    }
+
+    suspend fun health() {
+        execute("GET", "/health", accessToken = null)
+            .requireSuccess()
     }
 
     suspend fun listDevices(): List<PixelDevice> {
@@ -79,99 +87,78 @@ class ApiClient(
         }
     }
 
-    private suspend fun authenticate(
-        path: String,
-        email: String,
-        password: String
-    ) {
-        val body = JSONObject()
-            .put("email", email)
-            .put("password", password)
-            .toString()
-
-        val result = execute(
-            method = "POST",
-            path = path,
-            body = body
-        )
-        requireSuccess(result)
-        tokenStore.save(parseTokenPair(result.body))
-    }
-
     private suspend fun authenticatedGet(path: String): String {
-        val initial = tokenStore.load() ?: throw SessionRequiredException()
-        var result = execute(
+        val initial = sessionStore.load() ?: throw NoSessionException()
+        val first = execute(
             method = "GET",
             path = path,
-            accessToken = initial.accessToken,
-            tokenType = initial.tokenType
+            accessToken = initial.accessToken
         )
 
-        if (result.status == HttpURLConnection.HTTP_UNAUTHORIZED) {
-            val refreshed = refreshSession(initial.accessToken)
-            result = execute(
-                method = "GET",
-                path = path,
-                accessToken = refreshed.accessToken,
-                tokenType = refreshed.tokenType
-            )
+        if (first.status != HttpURLConnection.HTTP_UNAUTHORIZED) {
+            return first.requireSuccess()
         }
 
-        requireSuccess(result)
-        return result.body
+        try {
+            refreshSingleFlight(initial.accessToken)
+        } catch (error: Exception) {
+            sessionStore.clear()
+            throw SessionExpiredException(error)
+        }
+
+        val refreshed = sessionStore.load() ?: throw SessionExpiredException()
+        return execute(
+            method = "GET",
+            path = path,
+            accessToken = refreshed.accessToken
+        ).requireSuccess()
     }
 
-    private suspend fun refreshSession(accessTokenUsed: String): TokenPair {
-        return refreshMutex.withLock {
-            val current = tokenStore.load() ?: throw SessionRequiredException()
-
-            // Another request may have refreshed while this caller waited.
-            if (current.accessToken != accessTokenUsed) {
-                return@withLock current
+    /**
+     * Refresh tokens rotate on every use. If several API calls receive 401 at
+     * once, only the first coroutine is allowed to rotate the token. Later
+     * callers observe that the stored access token already changed and reuse
+     * the new session instead of replaying the old refresh token.
+     */
+    private suspend fun refreshSingleFlight(failedAccessToken: String) {
+        refreshMutex.withLock {
+            val current = sessionStore.load() ?: throw NoSessionException()
+            if (current.accessToken != failedAccessToken) {
+                return
             }
 
-            val body = JSONObject()
-                .put("refreshToken", current.refreshToken)
-                .toString()
-            val result = execute(
-                method = "POST",
-                path = "/v1/auth/refresh",
-                body = body
+            val replacement = publicAuthPost(
+                "/v1/auth/refresh",
+                JSONObject().put("refreshToken", current.refreshToken)
             )
-
-            if (result.status !in 200..299) {
-                tokenStore.clear()
-                throw SessionExpiredException()
-            }
-
-            val rotated = parseTokenPair(result.body)
-            tokenStore.save(rotated)
-            rotated
+            sessionStore.save(replacement)
         }
     }
 
-    private fun parseTokenPair(raw: String): TokenPair {
-        val json = JSONObject(raw)
+    private suspend fun publicAuthPost(
+        path: String,
+        body: JSONObject
+    ): TokenPair {
+        val response = execute(
+            method = "POST",
+            path = path,
+            body = body.toString(),
+            accessToken = null
+        )
+        val payload = JSONObject(response.requireSuccess())
         return TokenPair(
-            accessToken = json.getString("accessToken"),
-            refreshToken = json.getString("refreshToken"),
-            tokenType = json.getString("tokenType"),
-            expiresInSeconds = json.getLong("expiresInSeconds")
+            accessToken = payload.getString("accessToken"),
+            refreshToken = payload.getString("refreshToken"),
+            tokenType = payload.getString("tokenType"),
+            expiresInSeconds = payload.getLong("expiresInSeconds")
         )
-    }
-
-    private fun requireSuccess(result: HttpResult) {
-        if (result.status !in 200..299) {
-            throw ApiException(result.status, result.body)
-        }
     }
 
     private suspend fun execute(
         method: String,
         path: String,
         body: String? = null,
-        accessToken: String? = null,
-        tokenType: String = "Bearer"
+        accessToken: String?
     ): HttpResult = withContext(Dispatchers.IO) {
         val connection = URL(
             baseUrl.trimEnd('/') + path
@@ -180,25 +167,25 @@ class ApiClient(
         try {
             connection.requestMethod = method
             connection.setRequestProperty("Accept", "application/json")
-            connection.connectTimeout = 3_000
-            connection.readTimeout = 3_000
+            connection.connectTimeout = 5_000
+            connection.readTimeout = 5_000
 
             if (accessToken != null) {
                 connection.setRequestProperty(
                     "Authorization",
-                    "$tokenType $accessToken"
+                    "Bearer $accessToken"
                 )
             }
 
             if (body != null) {
+                val bytes = body.toByteArray(Charsets.UTF_8)
                 connection.doOutput = true
                 connection.setRequestProperty(
                     "Content-Type",
                     "application/json"
                 )
-                connection.outputStream.use {
-                    it.write(body.encodeToByteArray())
-                }
+                connection.setFixedLengthStreamingMode(bytes.size)
+                connection.outputStream.use { it.write(bytes) }
             }
 
             val status = connection.responseCode
@@ -222,12 +209,28 @@ class ApiClient(
 private data class HttpResult(
     val status: Int,
     val body: String
-)
+) {
+    fun requireSuccess(): String {
+        if (status !in 200..299) {
+            throw ApiException(status, body)
+        }
+        return body
+    }
+}
 
 class ApiException(
     val statusCode: Int,
-    val responseBody: String = ""
-) : Exception("PIXEL GO API returned HTTP $statusCode")
+    responseBody: String = ""
+) : Exception(
+    if (responseBody.isBlank()) {
+        "PIXEL GO API returned HTTP $statusCode"
+    } else {
+        "PIXEL GO API returned HTTP $statusCode: $responseBody"
+    }
+)
 
-class SessionRequiredException : Exception("Sign in to continue.")
-class SessionExpiredException : Exception("Your session expired. Sign in again.")
+class NoSessionException : Exception("Sign in to continue.")
+
+class SessionExpiredException(
+    cause: Throwable? = null
+) : Exception("Your session expired. Sign in again.", cause)
