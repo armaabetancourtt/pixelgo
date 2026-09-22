@@ -147,6 +147,22 @@ func (h *Hub) handleBrokerMessage(data []byte) {
 	h.route(envelope)
 }
 
+func (h *Hub) Close() {
+	h.mu.RLock()
+	clients := make([]*websocket.Conn, 0, len(h.clients))
+	for connection := range h.clients {
+		clients = append(clients, connection)
+	}
+	h.mu.RUnlock()
+
+	for _, connection := range clients {
+		_ = connection.Close(
+			websocket.StatusGoingAway,
+			"server shutting down",
+		)
+	}
+}
+
 func (h *Hub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	deviceID := r.URL.Query().Get("deviceId")
 	if deviceID == "" {
