@@ -14,6 +14,7 @@ import (
 	"github.com/armaabetancourtt/pixelgo/server/internal/devices"
 	"github.com/armaabetancourtt/pixelgo/server/internal/files"
 	"github.com/armaabetancourtt/pixelgo/server/internal/presence"
+	"github.com/armaabetancourtt/pixelgo/server/internal/ratelimit"
 	"github.com/armaabetancourtt/pixelgo/server/internal/realtime"
 	"github.com/armaabetancourtt/pixelgo/server/internal/transfers"
 	"github.com/redis/go-redis/v9"
@@ -35,6 +36,12 @@ func WithRedisIdempotency(client *redis.Client) Option {
 	}
 }
 
+func WithRateLimiter(limiter ratelimit.Limiter) Option {
+	return func(s *Server) {
+		s.rateLimiter = limiter
+	}
+}
+
 type Server struct {
 	devices   *devices.Service
 	transfers *transfers.Service
@@ -42,6 +49,7 @@ type Server struct {
 	files     *files.Service
 	presence         presence.Store
 	idempotencyRedis *redis.Client
+	rateLimiter      ratelimit.Limiter
 }
 
 func New(
@@ -82,12 +90,17 @@ func New(
 	mux.HandleFunc("PUT /dev-upload/{transferId}", s.devUpload)
 	mux.HandleFunc("GET /dev-download/{transferId}", s.devDownload)
 
+	var handler http.Handler = mux
+	if s.rateLimiter != nil {
+		handler = withRateLimit(handler, s.rateLimiter)
+	}
+
 	if s.idempotencyRedis != nil {
-		return withRedisIdempotency(mux, s.idempotencyRedis, 24*time.Hour)
+		return withRedisIdempotency(handler, s.idempotencyRedis, 24*time.Hour)
 	}
 
 	idempotency := newIdempotencyStore(24 * time.Hour)
-	return withIdempotency(mux, idempotency)
+	return withIdempotency(handler, idempotency)
 }
 
 func (s *Server) health(w http.ResponseWriter, _ *http.Request) {
