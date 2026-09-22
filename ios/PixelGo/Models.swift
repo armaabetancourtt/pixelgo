@@ -1,5 +1,21 @@
 import Foundation
 
+struct TokenPair: Codable, Hashable {
+    let accessToken: String
+    let refreshToken: String
+    let tokenType: String
+    let expiresInSeconds: Int64
+}
+
+struct AuthCredentials: Codable {
+    let email: String
+    let password: String
+}
+
+struct RefreshRequest: Codable {
+    let refreshToken: String
+}
+
 struct PixelDevice: Codable, Identifiable, Hashable {
     let id: String
     let name: String
