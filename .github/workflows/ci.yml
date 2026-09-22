@@ -162,10 +162,20 @@ jobs:
         working-directory: ios
         run: xcodegen generate
 
-      - name: Build and test
+      - name: Compile native iOS app and XCTest bundle
         working-directory: ios
         run: |
-          xcodebuild             -project PixelGo.xcodeproj             -scheme PixelGo             -destination 'platform=macOS,arch=arm64'             CODE_SIGNING_ALLOWED=YES             CODE_SIGNING_REQUIRED=NO             CODE_SIGN_STYLE=Manual             CODE_SIGN_IDENTITY='-'             test
+          xcodebuild \
+            -project PixelGo.xcodeproj \
+            -scheme PixelGo \
+            -sdk iphonesimulator \
+            -destination 'generic/platform=iOS Simulator' \
+            CODE_SIGNING_ALLOWED=NO \
+            build-for-testing
+
+      - name: Execute Swift contract tests
+        working-directory: ios
+        run: swift test
 
   docker:
     name: Backend container
