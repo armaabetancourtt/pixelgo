@@ -32,6 +32,25 @@ type Sender interface {
 	Send(context.Context, Delivery) error
 }
 
+type Presence interface {
+	IsOnline(context.Context, string) (bool, error)
+}
+
+type OfflineOnlySender struct {
+	Presence Presence
+	Next     Sender
+}
+
+func (s OfflineOnlySender) Send(ctx context.Context, delivery Delivery) error {
+	if s.Presence != nil {
+		online, err := s.Presence.IsOnline(ctx, delivery.DeviceID)
+		if err == nil && online {
+			return nil
+		}
+	}
+	return s.Next.Send(ctx, delivery)
+}
+
 type PermanentError struct {
 	Err error
 }
