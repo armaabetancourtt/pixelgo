@@ -67,7 +67,11 @@ private struct AuthView: View {
             .buttonStyle(.borderedProminent)
             .disabled(email.isEmpty || password.isEmpty || model.isLoading)
 
-            Button(createAccount ? "Already have an account? Sign in" : "New to PIXEL GO? Create account") {
+            Button(
+                createAccount
+                    ? "Already have an account? Sign in"
+                    : "New to PIXEL GO? Create account"
+            ) {
                 createAccount.toggle()
                 model.errorMessage = nil
             }
@@ -88,6 +92,11 @@ private struct AuthView: View {
 
 private struct HomeView: View {
     @EnvironmentObject private var model: AppModel
+    @State private var showingSend = false
+
+    private var destinationDevices: [PixelDevice] {
+        model.devices.filter { $0.id != model.localDeviceID }
+    }
 
     var body: some View {
         NavigationStack {
@@ -104,20 +113,57 @@ private struct HomeView: View {
                         ForEach(model.devices) { device in
                             HStack(spacing: 12) {
                                 Circle()
-                                    .fill(model.onlineDeviceIDs.contains(device.id) ? Color.green : Color.gray)
+                                    .fill(
+                                        model.onlineDeviceIDs.contains(device.id)
+                                            ? Color.green
+                                            : Color.gray
+                                    )
                                     .frame(width: 8, height: 8)
+
                                 VStack(alignment: .leading, spacing: 2) {
-                                    Text(device.name)
-                                        .font(.headline)
+                                    HStack(spacing: 6) {
+                                        Text(device.name)
+                                            .font(.headline)
+                                        if device.id == model.localDeviceID {
+                                            Text("THIS DEVICE")
+                                                .font(.system(size: 9, weight: .bold))
+                                                .foregroundStyle(.secondary)
+                                        }
+                                    }
+
                                     Text(device.platform.uppercased())
                                         .font(.caption)
                                         .foregroundStyle(.secondary)
                                 }
+
                                 Spacer()
-                                Text(model.onlineDeviceIDs.contains(device.id) ? "Online" : "Offline")
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
+
+                                Text(
+                                    model.onlineDeviceIDs.contains(device.id)
+                                        ? "Online"
+                                        : "Offline"
+                                )
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
                             }
+                        }
+                    }
+                }
+
+                if !model.receivedItems.isEmpty {
+                    Section("INBOX") {
+                        ForEach(model.receivedItems) { item in
+                            VStack(alignment: .leading, spacing: 5) {
+                                Text(item.kind == .link ? "LINK" : "TEXT")
+                                    .font(.caption2)
+                                    .fontWeight(.bold)
+                                    .foregroundStyle(.secondary)
+                                Text(item.text)
+                                    .font(.body)
+                                    .textSelection(.enabled)
+                                    .lineLimit(4)
+                            }
+                            .padding(.vertical, 2)
                         }
                     }
                 }
@@ -129,13 +175,19 @@ private struct HomeView: View {
                     } else {
                         ForEach(model.transfers) { transfer in
                             VStack(alignment: .leading, spacing: 5) {
-                                Text(transfer.displayName ?? transfer.kind.rawValue.capitalized)
-                                    .font(.headline)
+                                Text(
+                                    transfer.displayName
+                                        ?? transfer.kind.rawValue.capitalized
+                                )
+                                .font(.headline)
+
                                 HStack {
-                                    Text(ByteCountFormatter.string(
-                                        fromByteCount: transfer.sizeBytes,
-                                        countStyle: .file
-                                    ))
+                                    Text(
+                                        ByteCountFormatter.string(
+                                            fromByteCount: transfer.sizeBytes,
+                                            countStyle: .file
+                                        )
+                                    )
                                     Spacer()
                                     Text(transfer.status.rawValue)
                                 }
@@ -148,15 +200,22 @@ private struct HomeView: View {
             }
             .refreshable { await model.reload() }
             .safeAreaInset(edge: .bottom) {
-                Button(action: {}) {
+                Button {
+                    showingSend = true
+                } label: {
                     Label("SEND", systemImage: "plus")
                         .font(.headline)
                         .frame(maxWidth: .infinity)
                         .padding(.vertical, 14)
                 }
                 .buttonStyle(.borderedProminent)
+                .disabled(destinationDevices.isEmpty || model.isLoading)
                 .padding()
                 .background(.ultraThinMaterial)
+            }
+            .sheet(isPresented: $showingSend) {
+                SendTextView(destinations: destinationDevices)
+                    .environmentObject(model)
             }
             .navigationBarHidden(true)
         }
@@ -169,18 +228,107 @@ private struct HomeView: View {
                     .font(.system(size: 34, weight: .black, design: .rounded))
                 Text("Native cross-device sharing.")
                     .foregroundStyle(.secondary)
+
+                if destinationDevices.isEmpty {
+                    Text("Sign in on another device to start sending.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+
                 if let error = model.errorMessage {
                     Text(error)
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
             }
+
             Spacer()
+
             Button("Sign out") {
                 Task { await model.signOut() }
             }
             .font(.caption)
         }
         .padding(.vertical, 24)
+    }
+}
+
+private struct SendTextView: View {
+    @EnvironmentObject private var model: AppModel
+    @Environment(\.dismiss) private var dismiss
+
+    let destinations: [PixelDevice]
+
+    @State private var selectedDeviceID: String
+    @State private var text = ""
+
+    init(destinations: [PixelDevice]) {
+        self.destinations = destinations
+        _selectedDeviceID = State(
+            initialValue: destinations.first?.id ?? ""
+        )
+    }
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section("TO") {
+                    Picker("Device", selection: $selectedDeviceID) {
+                        ForEach(destinations) { device in
+                            Text(device.name)
+                                .tag(device.id)
+                        }
+                    }
+                }
+
+                Section("TEXT OR LINK") {
+                    TextEditor(text: $text)
+                        .frame(minHeight: 140)
+
+                    Text(
+                        "URLs are detected automatically and sent as link transfers."
+                    )
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                }
+
+                Section {
+                    Button {
+                        Task {
+                            let sent = await model.sendText(
+                                text,
+                                to: selectedDeviceID
+                            )
+                            if sent {
+                                dismiss()
+                            }
+                        }
+                    } label: {
+                        HStack {
+                            Spacer()
+                            if model.isLoading {
+                                ProgressView()
+                            } else {
+                                Text("SEND")
+                                    .fontWeight(.bold)
+                            }
+                            Spacer()
+                        }
+                    }
+                    .disabled(
+                        selectedDeviceID.isEmpty ||
+                        text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ||
+                        model.isLoading
+                    )
+                }
+            }
+            .navigationTitle("Send")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { dismiss() }
+                }
+            }
+        }
     }
 }
