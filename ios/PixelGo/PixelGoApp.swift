@@ -169,6 +169,25 @@ final class AppModel: ObservableObject {
         }
     }
 
+    func sendFile(
+        at fileURL: URL,
+        kind: Transfer.Kind,
+        displayName: String,
+        contentType: String,
+        to destinationDeviceID: String
+    ) async -> Bool {
+        return await performSend { sourceDeviceID in
+            try await api.sendFile(
+                at: fileURL,
+                kind: kind,
+                displayName: displayName,
+                contentType: contentType,
+                sourceDeviceID: sourceDeviceID,
+                destinationDeviceID: destinationDeviceID
+            )
+        }
+    }
+
     private func performSend(
         operation: (String) async throws -> Transfer
     ) async -> Bool {
