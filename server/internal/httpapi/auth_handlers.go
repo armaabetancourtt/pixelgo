@@ -37,11 +37,14 @@ func (s *Server) authLogin(w http.ResponseWriter, r *http.Request) {
 	}
 
 	pair, err := s.auth.Login(r.Context(), in)
-	if err != nil {
+	switch {
+	case err == nil:
+		writeJSON(w, http.StatusOK, pair)
+	case errors.Is(err, auth.ErrInvalidCredentials):
 		writeError(w, http.StatusUnauthorized, "invalid_credentials", "invalid email or password")
-		return
+	default:
+		writeError(w, http.StatusInternalServerError, "internal_error", "could not log in")
 	}
-	writeJSON(w, http.StatusOK, pair)
 }
 
 func (s *Server) authRefresh(w http.ResponseWriter, r *http.Request) {
@@ -57,7 +60,9 @@ func (s *Server) authRefresh(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, pair)
 	case errors.Is(err, auth.ErrRefreshReuse):
 		writeError(w, http.StatusUnauthorized, "refresh_reuse_detected", "refresh token family has been revoked")
-	default:
+	case errors.Is(err, auth.ErrInvalidRefresh):
 		writeError(w, http.StatusUnauthorized, "invalid_refresh", "refresh token is invalid or expired")
+	default:
+		writeError(w, http.StatusInternalServerError, "internal_error", "could not refresh session")
 	}
 }
