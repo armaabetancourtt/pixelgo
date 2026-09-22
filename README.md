@@ -3,15 +3,15 @@
 [English](README.md) · [Español](README.es.md)
 
 > **SEND IT. PICK IT UP ANYWHERE.**  
-> PIXEL GO is a cross-device sharing system for moving **files, photos, links, text and clipboard content** between iPhone and Android — with two independent native clients and one compatibility contract.
+> PIXEL GO is a cross-device sharing system for moving **files, photos, links, text and clipboard content** between iPhone and Android — with two independent native clients, one versioned contract and a backend built around delivery guarantees rather than demo-only CRUD.
 
-![iOS](https://img.shields.io/badge/iOS-Swift_%7C_SwiftUI-000000?logo=apple&logoColor=white)
+[![CI](https://github.com/armaabetancourtt/pixelgo/actions/workflows/ci.yml/badge.svg)](https://github.com/armaabetancourtt/pixelgo/actions/workflows/ci.yml)
+![iOS](https://img.shields.io/badge/iOS-Swift_6_%7C_SwiftUI-000000?logo=apple&logoColor=white)
 ![Android](https://img.shields.io/badge/Android-Kotlin_%7C_Compose-3DDC84?logo=android&logoColor=white)
 ![Backend](https://img.shields.io/badge/Backend-Go-00ADD8?logo=go&logoColor=white)
 ![PostgreSQL](https://img.shields.io/badge/PostgreSQL-Durable_State-4169E1?logo=postgresql&logoColor=white)
-![Redis](https://img.shields.io/badge/Redis-Presence_%7C_Rate_Limits-DC382D?logo=redis&logoColor=white)
-![OpenAPI](https://img.shields.io/badge/OpenAPI-Contract-6BA539?logo=openapiinitiative&logoColor=white)
-![CI](https://img.shields.io/badge/CI-iOS_%7C_Android_%7C_Go-2088FF?logo=githubactions&logoColor=white)
+![Redis](https://img.shields.io/badge/Redis-Realtime_%7C_Idempotency-DC382D?logo=redis&logoColor=white)
+![OpenAPI](https://img.shields.io/badge/OpenAPI-Compatibility_Contract-6BA539?logo=openapiinitiative&logoColor=white)
 
 ## The product
 
@@ -39,7 +39,17 @@ iPhone                                      Pixel
                                               Delivered ✓
 ```
 
-The visible product is deliberately small. That leaves room to go deep on the engineering underneath: native lifecycle behavior, background work, retry safety, realtime delivery, binary transfer integrity, backwards-compatible contracts and CI/CD.
+The visible product stays deliberately small. That leaves room to go deep on the parts that are easy to list on a résumé and much harder to make coherent in a real system:
+
+- two genuinely native mobile implementations;
+- account and resource isolation;
+- short-lived access tokens and rotating refresh tokens;
+- ambiguous mobile retries and idempotency;
+- durable state versus ephemeral presence;
+- realtime delivery across multiple API replicas;
+- signed binary transfer URLs and integrity validation;
+- backwards-compatible API evolution;
+- CI/CD across Swift, Kotlin and Go.
 
 ## One product. Two native apps.
 
@@ -57,30 +67,73 @@ PIXEL GO intentionally shares **no UI implementation** between platforms.
 
 | Concern | iOS | Android |
 |---|---|---|
-| Language | Swift | Kotlin |
+| Language | Swift 6 | Kotlin |
 | UI | SwiftUI | Jetpack Compose |
 | Async | Swift Concurrency | Coroutines |
-| Networking | URLSession | native HTTP boundary |
-| Secure storage | Keychain | Android Keystore |
+| Networking | URLSession actor | native HTTP + Coroutines |
+| Session storage | Keychain | Android Keystore + encrypted local blob |
+| Refresh coordination | actor-shared refresh task | coroutine Mutex |
 | Push boundary | APNs | FCM |
 | Background work | BackgroundTasks | WorkManager |
-| Local persistence | native persistence boundary | Room boundary |
-| Lifecycle | app / scene lifecycle | activity / process lifecycle |
+| Local data boundary | native persistence boundary | Room |
+| Lifecycle | app / scene | activity / process |
 
-Both current app shells load registered devices, recent transfers and **Redis-backed Online / Offline presence** from the same Go API, while remaining independently implemented.
+Both apps now implement native sign-in / account creation, restore encrypted sessions, send Bearer access tokens, rotate refresh tokens when needed and load devices, transfers and Online / Offline presence from the same Go API.
+
+**Same product semantics. Separate native codebases.**
+
+## Authentication is part of the system, not a badge
+
+PIXEL GO implements a real session model:
+
+```text
+email + password
+      ↓
+bcrypt password hash
+      ↓
+15 minute access JWT
+      +
+30 day opaque refresh token
+      ↓
+refresh token stored only as SHA-256 hash in PostgreSQL
+      ↓
+refresh rotates on every use
+      ↓
+reuse of an old refresh token
+      ↓
+entire token family revoked
+```
+
+Important properties:
+
+- passwords are hashed with bcrypt;
+- access tokens are HS256 JWTs with issuer, audience, expiry, subject and JTI;
+- refresh tokens are opaque random values, never JWTs;
+- only refresh-token hashes are stored server-side;
+- rotation is transactional in PostgreSQL;
+- reuse of an already-consumed refresh token is treated as a possible stolen-token signal and revokes the family;
+- iOS stores the session in Keychain;
+- Android encrypts the session with an AES-GCM key held by Android Keystore;
+- resource repositories scope devices and transfers to the authenticated user;
+- a user cannot create a transfer using another account's devices;
+- WebSocket device identity and presence lookups are ownership-checked.
+
+See [docs/AUTH.md](docs/AUTH.md).
 
 ## Transfer lifecycle
 
-Transfers are modeled as state, not as one giant upload request.
+Transfers are modeled as explicit state instead of one giant upload request.
 
 ```text
 created → uploading → ready → downloading → completed
     └──────────────→ failed ←────────────────┘
 ```
 
-The current local end-to-end path is already executable:
+The executable local/CI flow is:
 
 ```text
+Create account
+     ↓
 Register iPhone
      ↓
 Register Android
@@ -95,258 +148,296 @@ server verifies declared size + SHA-256
      ↓
 POST /uploaded
      ↓
-receive expiring signed download URL
+transfer.ready
+     ↓
+receive signed download URL
      ↓
 GET the same bytes
      ↓
-verify SHA-256
+validate SHA-256
      ↓
 POST /complete
+     ↓
+transfer.completed
      ↓
 Delivered ✓
 ```
 
-For deterministic local development and CI, the payload adapter currently stores bytes in process memory behind signed URLs. The boundary is intentionally designed so production can replace that adapter with S3-compatible object storage without changing transfer-domain semantics.
+For deterministic local development and CI, the current payload adapter stores bytes in process memory behind signed URLs. The file boundary is separated so a production S3/MinIO adapter can replace it without changing transfer-domain semantics.
 
-## Retry safety
+## Retry safety across replicas
 
-Mobile networks fail in ambiguous ways. A client can time out after the server successfully processed a request and have no idea whether retrying will duplicate the operation.
+Mobile failures are ambiguous. A request can time out after the server already committed it.
 
-PIXEL GO therefore implements `Idempotency-Key` handling for POST mutations.
+PIXEL GO supports `Idempotency-Key` on POST mutations.
 
 Current behavior:
 
-- same key + same request → replay the original response;
-- same key + different payload/path → `409 idempotency_key_reused`;
-- concurrent retries with the same key are **coalesced**, so only one mutation executes;
-- 5xx responses are not retained as successful idempotency records;
-- replayed responses expose `Idempotency-Replayed: true`.
+- same user + same key + same request → replay original response;
+- same key reused with a different request → `409 idempotency_key_reused`;
+- concurrent identical retries are coalesced;
+- 5xx responses are not committed as successful idempotency records;
+- replayed responses include `Idempotency-Replayed: true`;
+- idempotency keys are namespaced by authenticated user.
 
-When Redis is configured, idempotency is **distributed across API replicas**. Redis coordinates an owner-scoped mutation lock and stores the replayable response for 24 hours. Two identical retries can land on different backend instances and still execute the mutation only once. If Redis is configured but unavailable, mutation idempotency fails closed with `503` rather than risking a duplicate write.
-
-Without Redis, local/test mode keeps the same semantics with an in-process store.
+When Redis is configured, coordination is **cross-replica**. Two retries can hit two API instances and still execute the underlying mutation once. Redis uses an owner-scoped lock plus a replayable result record. If distributed idempotency is configured but Redis is unavailable, mutation coordination fails closed with `503` instead of risking a duplicate write.
 
 ## Architecture
 
 ```mermaid
 flowchart LR
-    I[iOS · SwiftUI] -->|REST| API[Go API]
-    A[Android · Compose] -->|REST| API
+    I[iOS · SwiftUI] -->|JWT + REST| API[Go API]
+    A[Android · Compose] -->|JWT + REST| API
+
     I <--> |WebSocket| RT[Realtime Hub]
     A <--> |WebSocket| RT
 
     API --> PG[(PostgreSQL)]
     API --> R[(Redis)]
     API --> FS[Signed File Boundary]
-    FS --> O[(S3 / MinIO in production)]
+    FS --> O[(S3 / MinIO production adapter)]
     API --> W[Workers]
     W --> P[APNs / FCM]
-    RT --> R
+    RT <--> R
 
-    C[contracts/openapi.yaml] -. contract .-> I
-    C -. contract .-> A
-    C -. contract .-> API
+    C[contracts/openapi.yaml] -. compatibility .-> I
+    C -. compatibility .-> A
+    C -. compatibility .-> API
 ```
 
-### Why a modular monolith?
+### Durable versus ephemeral state
 
-PIXEL GO does not use fake microservices for portfolio optics.
+The split is executable, not just diagrammed.
+
+**PostgreSQL**
+
+- users;
+- bcrypt password hashes;
+- hashed refresh-token families;
+- registered devices;
+- transfer metadata and lifecycle state.
+
+**Redis**
+
+- device presence TTLs;
+- realtime Pub/Sub fan-out across API replicas;
+- cross-replica idempotency locks and replay records;
+- shared fixed-window rate limits.
+
+**File boundary**
+
+- expiring signed upload/download capabilities;
+- local in-memory bytes today;
+- S3-compatible object storage is the next adapter.
+
+Signed URLs are regenerated from transfer state and are deliberately **not persisted as durable credentials**.
+
+## Realtime presence
+
+A registered device is durable. Being online is not.
 
 ```text
-server/
-├── cmd/api/
-└── internal/
-    ├── devices/
-    ├── transfers/
-    ├── files/
-    ├── realtime/
-    └── httpapi/
+WebSocket connects with owned deviceId
+               ↓
+        Redis presence key
+            TTL = 45s
+               ↓
+         heartbeat refresh
+               ↓
+disconnect / TTL expiry
+               ↓
+            offline
 ```
 
-The production architecture is intended to add explicit modules for auth, notifications, presence and platform adapters while keeping one deployable backend until scale gives a concrete reason to extract something.
+Redis Pub/Sub lets a transfer event produced by one API replica reach WebSocket clients connected to another replica.
 
-Natural future extraction points are realtime connection handling and asynchronous workers — not arbitrary domain nouns.
+## Rate limiting
 
-### Durable vs. ephemeral state
+Redis-backed fixed windows share request budgets across replicas. HTTP responses expose:
 
-PIXEL GO now makes the storage split executable rather than architectural-only:
+- `429 Too Many Requests`;
+- `Retry-After`;
+- `RateLimit-Limit`;
+- `RateLimit-Remaining`.
 
-- **PostgreSQL** stores durable devices and transfer metadata;
-- **Redis presence TTLs** represent whether a device appears reachable now;
-- **Redis Pub/Sub** fans realtime events across multiple API instances;
-- **Redis idempotency** coordinates retry-safe mutations across replicas;
-- **Redis rate limits** share request budgets across replicas;
-- signed URLs are regenerated from transfer state and are **not persisted** as durable credentials.
-
-CI runs the binary against real PostgreSQL + Redis and verifies that transfer metadata survives an API restart.
+Unlike idempotency, rate limiting is an abuse-control layer rather than a consistency boundary, so it intentionally fails open if Redis becomes unavailable.
 
 ## Repository layout
 
 ```text
 pixelgo/
-├── ios/                         # Swift / SwiftUI
-├── android/                     # Kotlin / Compose
-├── server/                      # Go modular monolith
+├── ios/                         # Swift 6 / SwiftUI
+├── android/                     # Kotlin / Jetpack Compose
+├── server/
+│   ├── cmd/api/
+│   └── internal/
+│       ├── auth/
+│       ├── devices/
+│       ├── transfers/
+│       ├── files/
+│       ├── presence/
+│       ├── realtime/
+│       ├── ratelimit/
+│       ├── httpapi/
+│       └── platform/
 ├── contracts/
-│   └── openapi.yaml             # Compatibility contract
+│   └── openapi.yaml
 ├── infrastructure/
 │   ├── docker-compose.yml
 │   └── postgres/
 ├── docs/
 │   ├── ARCHITECTURE.md
+│   ├── AUTH.md
 │   ├── TRANSFER_LIFECYCLE.md
 │   ├── SECURITY.md
 │   └── LOCAL_DEVELOPMENT.md
-├── tests/
-│   └── e2e/
-└── .github/
-    └── workflows/
+├── tests/e2e/
+└── .github/workflows/
 ```
 
 ## API contract
 
-`contracts/openapi.yaml` is the compatibility boundary between software that does not deploy at the same speed.
+`contracts/openapi.yaml` is the compatibility boundary between software that cannot be deployed atomically.
 
-Current public API foundation:
+Core routes:
 
 ```text
 GET    /health
+
+POST   /v1/auth/register
+POST   /v1/auth/login
+POST   /v1/auth/refresh
 
 GET    /v1/devices
 POST   /v1/devices
 DELETE /v1/devices/{deviceId}
 GET    /v1/presence/{deviceId}
 
-POST   /v1/transfers
 GET    /v1/transfers
+POST   /v1/transfers
 GET    /v1/transfers/{transferId}
 POST   /v1/transfers/{transferId}/uploaded
 POST   /v1/transfers/{transferId}/complete
 
-GET    /v1/events?deviceId=...    # WebSocket upgrade + presence identity
+GET    /v1/events?deviceId=...    # authenticated WebSocket upgrade
 ```
 
-The development server also exposes signed `/dev-upload/{id}` and `/dev-download/{id}` routes as the local file adapter. Those are not intended to become the production file-storage API.
-
-A mobile backend cannot assume every installed client updates immediately. CI therefore validates the OpenAPI structure and, on pull requests, runs a breaking-change check against the base contract.
+Protected routes use the OpenAPI Bearer security scheme. Pull-request CI validates the contract and rejects incompatible API changes against the base revision.
 
 ## Native iOS
 
-The iOS implementation currently includes:
+Implemented:
 
 - Swift 6 + SwiftUI;
-- actor-based `URLSession` API client;
-- real devices / recent transfers loaded from the API;
-- Online / Offline state loaded from the Redis-backed presence endpoint;
-- Keychain credential-storage boundary;
-- BackgroundTasks coordinator;
-- notification authorization boundary;
-- transfer domain models;
-- XCTest decoding coverage;
-- reproducible Xcode project generation with XcodeGen;
-- Swift 6 concurrency isolation rather than disabling safety checks.
+- actor-isolated API client;
+- native login / register UI;
+- Bearer authentication;
+- automatic refresh-token rotation;
+- concurrent refresh coalescing;
+- Keychain session persistence;
+- live API devices / transfers / presence;
+- BackgroundTasks boundary;
+- notification permission boundary;
+- XCTest + host contract tests;
+- reproducible XcodeGen project.
 
 ## Native Android
 
-The Android implementation currently includes:
+Implemented:
 
 - Kotlin + Jetpack Compose;
 - Coroutines;
-- real devices / recent transfers loaded from the same API;
-- Online / Offline state loaded from the same Redis-backed presence endpoint;
-- Android Keystore encryption boundary;
-- WorkManager transfer-worker boundary;
-- Room entity/persistence boundary;
+- native login / register UI;
+- Bearer authentication;
+- automatic refresh-token rotation;
+- coroutine `Mutex` refresh coalescing;
+- AES-GCM session encryption using Android Keystore;
+- live API devices / transfers / presence;
+- WorkManager boundary;
+- Room persistence boundary;
 - FCM dependency boundary;
-- JUnit foundation;
-- AndroidX explicitly configured in the build.
+- JUnit;
+- AndroidX build configuration.
 
-The two clients agree on product semantics. They do not share UI source code.
+## Security boundaries
 
-## Signed transfer security
+Current transfer security:
 
-The local signed-URL implementation uses HMAC-SHA256 over action, transfer ID and expiry.
+- HMAC-SHA256 signed local transfer URLs;
+- action-specific upload/download signatures;
+- short expiry;
+- exact byte-count verification;
+- SHA-256 payload validation;
+- user-scoped transfer metadata;
+- access/refresh token separation;
+- refresh-token family revocation.
 
-A signed URL is scoped to:
-
-- one transfer;
-- one action: upload or download;
-- a short expiration window.
-
-The local upload path additionally verifies:
-
-1. the transfer is still accepting an upload;
-2. byte count exactly matches declared `sizeBytes`;
-3. SHA-256 exactly matches transfer metadata.
-
-Only after a valid payload exists can the transfer transition to `ready`.
-
-This is not end-to-end encryption yet. The current checksum proves payload integrity, while TLS protects transport. End-to-end content encryption remains a separate future security milestone.
+This is **not yet end-to-end file encryption**. TLS protects transport and SHA-256 proves integrity in the current design. Content E2EE would be a separate cryptographic protocol and is not claimed here.
 
 See [docs/SECURITY.md](docs/SECURITY.md).
 
 ## CI/CD
 
-Every push / pull request validates the project as multiple independently built systems:
+Every push / PR validates independently built software:
 
 ```text
                          PR / PUSH
                              ↓
-                 OpenAPI structural validation
+                   OpenAPI validation
                              ↓
-              ┌──────────────┼──────────────┐
-              ↓              ↓              ↓
-        SwiftUI tests    Compose tests     Go vet
-        iOS build        Android build     Go -race tests
-              │              │              ↓
-              │              │       binary E2E lifecycle
-              └──────────────┴──────────────┤
-                                             ↓
-                                      Docker image build
+        ┌────────────────────┼────────────────────┐
+        ↓                    ↓                    ↓
+   iOS native build     Android build       Go vet + race
+   Swift tests          JUnit tests         PostgreSQL + Redis
+        │                    │                    ↓
+        │                    │          authenticated binary E2E
+        │                    │                    ↓
+        └────────────────────┴────────────── Docker build
 ```
 
-On pull requests, the contract job additionally checks for incompatible OpenAPI changes.
+The backend E2E runs with **authentication required**, PostgreSQL and Redis enabled. It proves:
 
-Release tags produce independent backend, Android and iOS artifacts. Store signing and real production deployment credentials are intentionally not fabricated in source control.
+1. account creation;
+2. unauthenticated requests are rejected;
+3. user-scoped iPhone + Android registration;
+4. retry-safe transfer creation;
+5. real signed upload/download bytes;
+6. SHA-256 integrity;
+7. completed delivery state;
+8. another account cannot see the devices or transfer;
+9. refresh rotation;
+10. old refresh-token reuse revokes the family;
+11. durable authenticated state survives an API restart.
 
-## Tests that matter
+Release tags build independent backend, Android and iOS artifacts. Real store/deployment credentials are intentionally not committed.
 
-The project prioritizes product invariants over test-count vanity.
+## Testing philosophy
 
-Implemented backend/E2E coverage now includes:
+The goal is not a vanity test count. Tests target invariants that would hurt real users if broken:
 
+- auth isolation;
+- bcrypt credential verification;
+- refresh reuse detection;
 - transfer state transitions;
-- cannot complete before ready;
-- HMAC signed URL verification;
 - signed URL tamper rejection;
-- immutable payload storage semantics;
-- sequential idempotent replay;
-- conflicting idempotency-key reuse;
-- concurrent retry coalescing;
-- retry after server failure;
-- real upload of payload bytes;
-- upload byte-count validation boundary;
-- SHA-256 integrity validation;
-- real download of the same bytes;
-- final delivered state;
-- PostgreSQL persistence across an API process restart;
-- Redis presence TTL lifecycle;
-- Redis Pub/Sub event fan-out;
-- idempotency across independent handlers / replica boundaries;
-- shared Redis request budgets;
-- HTTP `429` + `Retry-After` rate-limit behavior.
-
-The E2E currently simulates the iPhone/Android roles through the HTTP API in CI; it does **not** claim physical-device automation yet.
+- checksum and size mismatch;
+- sequential and concurrent idempotency;
+- cross-replica retry coordination;
+- PostgreSQL restart persistence;
+- Redis presence expiry;
+- Redis Pub/Sub fan-out;
+- shared rate-limit counters;
+- mobile contract decoding.
 
 ## Local development
 
-Start optional infrastructure:
+Start infrastructure:
 
 ```bash
 docker compose -f infrastructure/docker-compose.yml up -d
 ```
 
-Run the backend:
+Backend:
 
 ```bash
 cd server
@@ -356,7 +447,13 @@ go test ./...
 go run ./cmd/api
 ```
 
-With the API running, exercise the real local transfer lifecycle:
+To run the same security path as CI, set:
+
+```bash
+PIXELGO_REQUIRE_AUTH=true
+```
+
+Then run:
 
 ```bash
 python3 tests/e2e/transfer_flow.py
@@ -381,52 +478,46 @@ gradle :app:assembleDebug
 
 Full setup: [docs/LOCAL_DEVELOPMENT.md](docs/LOCAL_DEVELOPMENT.md).
 
-## Current implementation
+## Current status
 
-**Implemented now:**
+### Implemented
 
+- native SwiftUI and Compose applications;
+- native auth UI on both platforms;
+- Keychain / Keystore-backed sessions;
+- JWT access tokens + rotating opaque refresh tokens;
+- refresh-token reuse family revocation;
+- authenticated user/resource isolation;
 - versioned OpenAPI contract;
-- native SwiftUI application foundation;
-- native Compose application foundation;
-- both clients reading the same backend state and live presence;
-- Go HTTP modular-monolith foundation;
-- explicit transfer state machine;
-- WebSocket realtime event hub;
-- HMAC-signed upload/download URLs with expiry;
-- real local binary upload/download path;
-- byte-count and SHA-256 validation;
-- retry-safe idempotency with concurrent coalescing;
-- Keychain / Android Keystore boundaries;
-- BackgroundTasks / WorkManager boundaries;
-- PostgreSQL runtime repositories for durable devices/transfers;
-- persistence verified across API restart;
-- Redis-backed presence with TTL heartbeats;
-- Redis Pub/Sub distributed realtime fan-out;
-- Redis-backed cross-replica idempotency;
-- shared Redis rate limiting with `429` / `Retry-After`;
-- local PostgreSQL + Redis + MinIO environment;
+- Go modular monolith;
+- PostgreSQL runtime repositories;
+- Redis presence, Pub/Sub, idempotency and rate limiting;
+- WebSocket realtime hub;
+- signed binary upload/download development adapter;
+- exact-size and SHA-256 validation;
+- cross-replica retry safety;
+- authenticated E2E lifecycle;
 - cross-platform CI;
-- real binary E2E lifecycle in CI;
-- release-artifact workflows;
+- Docker image build;
+- release artifacts;
 - bilingual engineering documentation.
 
-**Still intentionally not claimed as complete:**
+### Intentionally still pending
 
-- user authentication and refresh-token rotation;
-- production S3/MinIO signed-URL adapter;
-- real APNs / FCM delivery adapters;
-- generated Swift/Kotlin clients from OpenAPI;
+- production S3/MinIO direct object-storage adapter;
+- real APNs / FCM delivery adapters and push credentials;
+- complete mobile SEND picker/upload UX;
+- background destination auto-download;
+- content end-to-end encryption;
 - physical iPhone → Android automated E2E;
-- App Store / Play internal distribution with real credentials.
-
-## Engineering thesis
+- real TestFlight / Play internal-distribution credentials.
 
 PIXEL GO is intentionally narrower than a social network, map product or ML platform.
 
-Its purpose is simple:
+Its purpose remains simple:
 
 > **Send something from one device to another.**
 
-That small product surface creates space to demonstrate the engineering details that are easy to list on a résumé and much harder to implement coherently: native platforms, background execution, compatibility contracts, retries, realtime delivery, binary integrity, secure storage boundaries, testing and CI/CD.
+That small product surface creates room to demonstrate the engineering underneath with unusual depth.
 
 **One product. Two native apps. One contract.**
