@@ -394,7 +394,6 @@ components:
         platform:
           type: string
           enum: [ios, android]
-        pushToken: { type: string }
         createdAt: { type: string, format: date-time }
     DevicePresence:
       type: object
