@@ -10,6 +10,7 @@ type User struct {
 }
 
 type TokenPair struct {
+	UserID           string `json:"userId"`
 	AccessToken      string `json:"accessToken"`
 	RefreshToken     string `json:"refreshToken"`
 	TokenType        string `json:"tokenType"`
