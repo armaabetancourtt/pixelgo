@@ -53,6 +53,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.io.File
 import kotlin.math.roundToInt
 
 class MainActivity : ComponentActivity() {
@@ -321,10 +322,31 @@ private fun PixelGoApp(
     fun saveIncoming(transfer: Transfer, destinationUri: Uri) {
         scope.launch {
             isLoading = true
+            var verifiedFile: File? = null
+
             try {
+                verifiedFile = withContext(Dispatchers.IO) {
+                    File.createTempFile(
+                        "pixelgo-verified-",
+                        ".download",
+                        context.cacheDir
+                    )
+                }
+
                 api.downloadPayloadTo(transfer) {
-                    context.contentResolver.openOutputStream(destinationUri)
-                        ?: error("Could not open destination file.")
+                    verifiedFile.outputStream()
+                }
+
+                withContext(Dispatchers.IO) {
+                    verifiedFile.inputStream().use { input ->
+                        val output = context.contentResolver
+                            .openOutputStream(destinationUri)
+                            ?: error("Could not open destination file.")
+                        output.use {
+                            input.copyTo(it, 64 * 1024)
+                            it.flush()
+                        }
+                    }
                 }
 
                 api.completeTransfer(transfer.id)
@@ -334,6 +356,9 @@ private fun PixelGoApp(
             } catch (error: Exception) {
                 errorMessage = error.message ?: "Could not save transfer."
             } finally {
+                withContext(Dispatchers.IO) {
+                    verifiedFile?.delete()
+                }
                 isLoading = false
             }
         }
