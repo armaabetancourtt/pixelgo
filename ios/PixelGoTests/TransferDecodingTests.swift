@@ -24,4 +24,23 @@ final class TransferDecodingTests: XCTestCase {
         XCTAssertEqual(transfer.kind, .photo)
         XCTAssertEqual(transfer.status, .ready)
     }
+
+    func testDecodesDevicePresence() throws {
+        let json = """
+        {
+          "id":"dev_1",
+          "name":"Armando's iPhone",
+          "platform":"ios",
+          "online":true,
+          "createdAt":"2026-09-21T20:00:00Z"
+        }
+        """.data(using: .utf8)!
+
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        let device = try decoder.decode(PixelDevice.self, from: json)
+
+        XCTAssertTrue(device.online)
+        XCTAssertEqual(device.platform, "ios")
+    }
 }
