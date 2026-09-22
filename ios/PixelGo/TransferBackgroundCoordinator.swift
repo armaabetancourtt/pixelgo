@@ -1,5 +1,6 @@
 import BackgroundTasks
 
+@MainActor
 final class TransferBackgroundCoordinator {
     static let shared = TransferBackgroundCoordinator()
     static let refreshIdentifier = "com.armaabetancourtt.pixelgo.transfer.refresh"
@@ -10,12 +11,18 @@ final class TransferBackgroundCoordinator {
         BGTaskScheduler.shared.register(
             forTaskWithIdentifier: Self.refreshIdentifier,
             using: nil
-        ) { task in
-            guard let refreshTask = task as? BGAppRefreshTask else {
-                task.setTaskCompleted(success: false)
-                return
+        ) { [weak self] task in
+            Task { @MainActor in
+                guard let self else {
+                    task.setTaskCompleted(success: false)
+                    return
+                }
+                guard let refreshTask = task as? BGAppRefreshTask else {
+                    task.setTaskCompleted(success: false)
+                    return
+                }
+                self.handle(refreshTask)
             }
-            self.handle(refreshTask)
         }
     }
 
