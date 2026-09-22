@@ -1,0 +1,268 @@
+openapi: 3.1.0
+info:
+  title: PIXEL GO API
+  version: 0.1.0
+  description: Versioned contract for native PIXEL GO clients.
+servers:
+  - url: http://localhost:8080
+tags:
+  - name: system
+  - name: devices
+  - name: transfers
+paths:
+  /health:
+    get:
+      tags: [system]
+      operationId: getHealth
+      responses:
+        "200":
+          description: Service is healthy
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Health"
+  /v1/devices:
+    get:
+      tags: [devices]
+      operationId: listDevices
+      responses:
+        "200":
+          description: Registered devices
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Device"
+    post:
+      tags: [devices]
+      operationId: registerDevice
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RegisterDeviceRequest"
+      responses:
+        "201":
+          description: Device registered
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Device"
+  /v1/devices/{deviceId}:
+    delete:
+      tags: [devices]
+      operationId: deleteDevice
+      parameters:
+        - $ref: "#/components/parameters/DeviceId"
+      responses:
+        "204":
+          description: Device removed
+        "404":
+          $ref: "#/components/responses/NotFound"
+  /v1/transfers:
+    get:
+      tags: [transfers]
+      operationId: listTransfers
+      responses:
+        "200":
+          description: Recent transfers
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Transfer"
+    post:
+      tags: [transfers]
+      operationId: createTransfer
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateTransferRequest"
+      responses:
+        "201":
+          description: Transfer created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Transfer"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+  /v1/transfers/{transferId}:
+    get:
+      tags: [transfers]
+      operationId: getTransfer
+      parameters:
+        - $ref: "#/components/parameters/TransferId"
+      responses:
+        "200":
+          description: Transfer state
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Transfer"
+        "404":
+          $ref: "#/components/responses/NotFound"
+  /v1/transfers/{transferId}/uploaded:
+    post:
+      tags: [transfers]
+      operationId: markTransferUploaded
+      parameters:
+        - $ref: "#/components/parameters/TransferId"
+        - $ref: "#/components/parameters/IdempotencyKey"
+      responses:
+        "200":
+          description: Transfer is ready for delivery
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Transfer"
+        "409":
+          $ref: "#/components/responses/Conflict"
+  /v1/transfers/{transferId}/complete:
+    post:
+      tags: [transfers]
+      operationId: completeTransfer
+      parameters:
+        - $ref: "#/components/parameters/TransferId"
+        - $ref: "#/components/parameters/IdempotencyKey"
+      responses:
+        "200":
+          description: Transfer completed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Transfer"
+        "409":
+          $ref: "#/components/responses/Conflict"
+  /v1/events:
+    get:
+      tags: [system]
+      operationId: connectEvents
+      description: Upgrades to a WebSocket connection. Event payloads use RealtimeEvent.
+      responses:
+        "101":
+          description: Switching Protocols
+components:
+  parameters:
+    DeviceId:
+      name: deviceId
+      in: path
+      required: true
+      schema: { type: string }
+    TransferId:
+      name: transferId
+      in: path
+      required: true
+      schema: { type: string }
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: false
+      schema:
+        type: string
+        maxLength: 128
+  responses:
+    BadRequest:
+      description: Invalid request
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/APIError" }
+    NotFound:
+      description: Resource not found
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/APIError" }
+    Conflict:
+      description: Invalid state transition
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/APIError" }
+  schemas:
+    Health:
+      type: object
+      required: [status]
+      properties:
+        status: { type: string, const: ok }
+    Device:
+      type: object
+      required: [id, name, platform, createdAt]
+      properties:
+        id: { type: string }
+        name: { type: string }
+        platform:
+          type: string
+          enum: [ios, android]
+        pushToken: { type: string }
+        createdAt: { type: string, format: date-time }
+    RegisterDeviceRequest:
+      type: object
+      required: [name, platform]
+      properties:
+        name: { type: string, minLength: 1, maxLength: 120 }
+        platform:
+          type: string
+          enum: [ios, android]
+        pushToken: { type: string }
+    TransferKind:
+      type: string
+      enum: [file, photo, link, text, clipboard]
+    TransferStatus:
+      type: string
+      enum: [created, uploading, ready, downloading, completed, failed]
+    Transfer:
+      type: object
+      required:
+        [id, sourceDeviceId, destinationDeviceId, kind, status, sizeBytes, sha256, createdAt, updatedAt]
+      properties:
+        id: { type: string }
+        sourceDeviceId: { type: string }
+        destinationDeviceId: { type: string }
+        kind: { $ref: "#/components/schemas/TransferKind" }
+        status: { $ref: "#/components/schemas/TransferStatus" }
+        displayName: { type: string }
+        contentType: { type: string }
+        sizeBytes: { type: integer, format: int64, minimum: 0 }
+        sha256:
+          type: string
+          pattern: "^[a-fA-F0-9]{64}$"
+        uploadUrl: { type: string, format: uri }
+        downloadUrl: { type: string, format: uri }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+    CreateTransferRequest:
+      type: object
+      required: [sourceDeviceId, destinationDeviceId, kind, sizeBytes, sha256]
+      properties:
+        sourceDeviceId: { type: string }
+        destinationDeviceId: { type: string }
+        kind: { $ref: "#/components/schemas/TransferKind" }
+        displayName: { type: string, maxLength: 255 }
+        contentType: { type: string, maxLength: 120 }
+        sizeBytes: { type: integer, format: int64, minimum: 0, maximum: 1073741824 }
+        sha256:
+          type: string
+          pattern: "^[a-fA-F0-9]{64}$"
+    RealtimeEvent:
+      type: object
+      required: [type, occurredAt, payload]
+      properties:
+        type:
+          type: string
+          enum: [device.online, device.offline, transfer.ready, transfer.completed, transfer.failed]
+        occurredAt: { type: string, format: date-time }
+        payload: { type: object, additionalProperties: true }
+    APIError:
+      type: object
+      required: [code, message]
+      properties:
+        code: { type: string }
+        message: { type: string }
