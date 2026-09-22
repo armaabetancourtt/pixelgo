@@ -2,6 +2,7 @@ package transfers
 
 import (
 	"context"
+	"io/fs"
 	"testing"
 )
 
@@ -9,23 +10,49 @@ type noOpPublisher struct{}
 
 func (noOpPublisher) Publish(string, any) {}
 
-type fakeURLs struct{}
-
-func (fakeURLs) UploadURL(id string) string {
-	return "https://upload.invalid/" + id
+type fakeURLs struct {
+	uploaded bool
+	size     int64
+	checksum string
 }
 
-func (fakeURLs) DownloadURL(id string) string {
-	return "https://download.invalid/" + id
+func (f fakeURLs) UploadURL(
+	_ context.Context,
+	id string,
+	_ string,
+) (string, error) {
+	return "https://upload.invalid/" + id, nil
+}
+
+func (f fakeURLs) DownloadURL(
+	_ context.Context,
+	id string,
+) (string, error) {
+	return "https://download.invalid/" + id, nil
+}
+
+func (f fakeURLs) InspectUploaded(
+	_ context.Context,
+	_ string,
+) (int64, string, error) {
+	if !f.uploaded {
+		return 0, "", fs.ErrNotExist
+	}
+	return f.size, f.checksum, nil
 }
 
 const checksum = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 
 func TestTransferLifecycle(t *testing.T) {
-	s := NewService(NewMemoryRepository(), noOpPublisher{}, fakeURLs{})
+	urls := fakeURLs{uploaded: true, size: 12, checksum: checksum}
+	s := NewService(NewMemoryRepository(), noOpPublisher{}, urls)
+
 	created, err := s.Create(context.Background(), CreateInput{
-		SourceDeviceID: "ios-1", DestinationDeviceID: "android-1",
-		Kind: KindPhoto, SizeBytes: 12, SHA256: checksum,
+		SourceDeviceID: "ios-1",
+		DestinationDeviceID: "android-1",
+		Kind: KindPhoto,
+		SizeBytes: 12,
+		SHA256: checksum,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -57,16 +84,77 @@ func TestTransferLifecycle(t *testing.T) {
 	}
 }
 
-func TestCannotCompleteBeforeUpload(t *testing.T) {
-	s := NewService(NewMemoryRepository(), noOpPublisher{}, fakeURLs{})
+func TestCannotMarkReadyWithoutUploadedObject(t *testing.T) {
+	s := NewService(
+		NewMemoryRepository(),
+		noOpPublisher{},
+		fakeURLs{},
+	)
 	created, err := s.Create(context.Background(), CreateInput{
-		SourceDeviceID: "ios-1", DestinationDeviceID: "android-1",
-		Kind: KindFile, SizeBytes: 5, SHA256: checksum,
+		SourceDeviceID: "ios-1",
+		DestinationDeviceID: "android-1",
+		Kind: KindFile,
+		SizeBytes: 5,
+		SHA256: checksum,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.Complete(context.Background(), created.ID); err != ErrInvalidTransition {
+
+	if _, err := s.MarkUploaded(
+		context.Background(),
+		created.ID,
+	); err != ErrUploadMissing {
+		t.Fatalf("expected upload missing, got %v", err)
+	}
+}
+
+func TestCannotMarkReadyWithWrongUploadedIntegrity(t *testing.T) {
+	urls := fakeURLs{
+		uploaded: true,
+		size:     5,
+		checksum: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+	}
+	s := NewService(NewMemoryRepository(), noOpPublisher{}, urls)
+	created, err := s.Create(context.Background(), CreateInput{
+		SourceDeviceID: "ios-1",
+		DestinationDeviceID: "android-1",
+		Kind: KindFile,
+		SizeBytes: 5,
+		SHA256: checksum,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := s.MarkUploaded(
+		context.Background(),
+		created.ID,
+	); err != ErrUploadIntegrity {
+		t.Fatalf("expected upload integrity error, got %v", err)
+	}
+}
+
+func TestCannotCompleteBeforeUpload(t *testing.T) {
+	s := NewService(
+		NewMemoryRepository(),
+		noOpPublisher{},
+		fakeURLs{},
+	)
+	created, err := s.Create(context.Background(), CreateInput{
+		SourceDeviceID: "ios-1",
+		DestinationDeviceID: "android-1",
+		Kind: KindFile,
+		SizeBytes: 5,
+		SHA256: checksum,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Complete(
+		context.Background(),
+		created.ID,
+	); err != ErrInvalidTransition {
 		t.Fatalf("expected invalid transition, got %v", err)
 	}
 }
