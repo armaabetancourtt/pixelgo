@@ -170,6 +170,7 @@ func (p *APNSProvider) Send(ctx context.Context, delivery Delivery) error {
 	req.Header.Set("apns-topic", p.topic)
 	req.Header.Set("apns-push-type", "alert")
 	req.Header.Set("apns-priority", "10")
+	req.Header.Set("apns-collapse-id", delivery.TransferID)
 
 	resp, err := p.client.Do(req)
 	if err != nil {
@@ -285,7 +286,8 @@ func (p *FCMProvider) Send(ctx context.Context, delivery Delivery) error {
 				"transferId": delivery.TransferID,
 			},
 			"android": map[string]any{
-				"priority": "HIGH",
+				"priority":     "HIGH",
+				"collapse_key": delivery.TransferID,
 			},
 		},
 	})
