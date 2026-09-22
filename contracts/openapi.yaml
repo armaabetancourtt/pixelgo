@@ -5,14 +5,18 @@ info:
   description: Versioned contract for native PIXEL GO clients.
 servers:
   - url: http://localhost:8080
+security:
+  - bearerAuth: []
 tags:
   - name: system
+  - name: auth
   - name: devices
   - name: transfers
   - name: presence
 paths:
   /health:
     get:
+      security: []
       tags: [system]
       operationId: getHealth
       responses:
@@ -22,6 +26,74 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Health"
+  /v1/auth/register:
+    post:
+      security: []
+      tags: [auth]
+      operationId: registerUser
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AuthCredentials"
+      responses:
+        "201":
+          description: Account created and session issued
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TokenPair"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+  /v1/auth/login:
+    post:
+      security: []
+      tags: [auth]
+      operationId: loginUser
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AuthCredentials"
+      responses:
+        "200":
+          description: Session issued
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TokenPair"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+  /v1/auth/refresh:
+    post:
+      security: []
+      tags: [auth]
+      operationId: refreshSession
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RefreshRequest"
+      responses:
+        "200":
+          description: Rotated session issued
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TokenPair"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
   /v1/devices:
     get:
       tags: [devices]
@@ -194,6 +266,11 @@ paths:
         "101":
           description: Switching Protocols
 components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
   parameters:
     DeviceId:
       name: deviceId
@@ -213,6 +290,11 @@ components:
         type: string
         maxLength: 128
   responses:
+    Unauthorized:
+      description: Authentication failed or access token expired
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/APIError" }
     TooManyRequests:
       description: Request budget exceeded
       headers:
@@ -241,6 +323,36 @@ components:
         application/json:
           schema: { $ref: "#/components/schemas/APIError" }
   schemas:
+    AuthCredentials:
+      type: object
+      required: [email, password]
+      properties:
+        email:
+          type: string
+          format: email
+        password:
+          type: string
+          minLength: 12
+          maxLength: 72
+    RefreshRequest:
+      type: object
+      required: [refreshToken]
+      properties:
+        refreshToken:
+          type: string
+          minLength: 32
+    TokenPair:
+      type: object
+      required: [accessToken, refreshToken, tokenType, expiresInSeconds]
+      properties:
+        accessToken: { type: string }
+        refreshToken: { type: string }
+        tokenType:
+          type: string
+          const: Bearer
+        expiresInSeconds:
+          type: integer
+          minimum: 1
     Health:
       type: object
       required: [status]
