@@ -56,7 +56,8 @@ func (s *Service) Create(ctx context.Context, in CreateInput) (Transfer, error) 
 	if err != nil {
 		return Transfer{}, err
 	}
-	t := Transfer{
+
+	persisted, err := s.repo.Create(ctx, Transfer{
 		ID:                  id,
 		SourceDeviceID:      in.SourceDeviceID,
 		DestinationDeviceID: in.DestinationDeviceID,
@@ -66,19 +67,32 @@ func (s *Service) Create(ctx context.Context, in CreateInput) (Transfer, error) 
 		ContentType:         in.ContentType,
 		SizeBytes:           in.SizeBytes,
 		SHA256:              in.SHA256,
-		UploadURL:           s.urls.UploadURL(id),
 		CreatedAt:           now,
 		UpdatedAt:           now,
+	})
+	if err != nil {
+		return Transfer{}, err
 	}
-	return s.repo.Create(ctx, t)
+	return s.decorate(persisted), nil
 }
 
 func (s *Service) List(ctx context.Context) ([]Transfer, error) {
-	return s.repo.List(ctx)
+	items, err := s.repo.List(ctx)
+	if err != nil {
+		return nil, err
+	}
+	for i := range items {
+		items[i] = s.decorate(items[i])
+	}
+	return items, nil
 }
 
 func (s *Service) Get(ctx context.Context, id string) (Transfer, error) {
-	return s.repo.Get(ctx, id)
+	t, err := s.repo.Get(ctx, id)
+	if err != nil {
+		return Transfer{}, err
+	}
+	return s.decorate(t), nil
 }
 
 func (s *Service) MarkUploaded(ctx context.Context, id string) (Transfer, error) {
@@ -89,15 +103,20 @@ func (s *Service) MarkUploaded(ctx context.Context, id string) (Transfer, error)
 	if t.Status != StatusUploading {
 		return Transfer{}, ErrInvalidTransition
 	}
+
 	t.Status = StatusReady
 	t.UploadURL = ""
-	t.DownloadURL = s.urls.DownloadURL(id)
+	t.DownloadURL = ""
 	t.UpdatedAt = time.Now().UTC()
+
 	t, err = s.repo.Update(ctx, t)
-	if err == nil {
-		s.publisher.Publish("transfer.ready", t)
+	if err != nil {
+		return Transfer{}, err
 	}
-	return t, err
+
+	t = s.decorate(t)
+	s.publisher.Publish("transfer.ready", t)
+	return t, nil
 }
 
 func (s *Service) Complete(ctx context.Context, id string) (Transfer, error) {
@@ -108,13 +127,34 @@ func (s *Service) Complete(ctx context.Context, id string) (Transfer, error) {
 	if t.Status != StatusReady && t.Status != StatusDownloading {
 		return Transfer{}, ErrInvalidTransition
 	}
+
 	t.Status = StatusCompleted
+	t.UploadURL = ""
+	t.DownloadURL = ""
 	t.UpdatedAt = time.Now().UTC()
+
 	t, err = s.repo.Update(ctx, t)
-	if err == nil {
-		s.publisher.Publish("transfer.completed", t)
+	if err != nil {
+		return Transfer{}, err
 	}
-	return t, err
+
+	t = s.decorate(t)
+	s.publisher.Publish("transfer.completed", t)
+	return t, nil
+}
+
+func (s *Service) decorate(t Transfer) Transfer {
+	t.UploadURL = ""
+	t.DownloadURL = ""
+
+	switch t.Status {
+	case StatusUploading:
+		t.UploadURL = s.urls.UploadURL(t.ID)
+	case StatusReady, StatusDownloading, StatusCompleted:
+		t.DownloadURL = s.urls.DownloadURL(t.ID)
+	}
+
+	return t
 }
 
 func newID(prefix string) (string, error) {
