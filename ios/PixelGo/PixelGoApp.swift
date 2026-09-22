@@ -32,6 +32,8 @@ final class AppModel: ObservableObject {
     @Published var devices: [PixelDevice] = []
     @Published var transfers: [Transfer] = []
     @Published var onlineDeviceIDs: Set<String> = []
+    @Published var receivedItems: [ReceivedTextItem] = []
+    @Published var localDeviceID: String?
     @Published var isLoading = false
     @Published var isAuthenticated = false
     @Published var didBootstrap = false
@@ -75,6 +77,8 @@ final class AppModel: ObservableObject {
         devices = []
         transfers = []
         onlineDeviceIDs = []
+        receivedItems = []
+        localDeviceID = nil
         errorMessage = nil
         isAuthenticated = false
     }
@@ -110,12 +114,72 @@ final class AppModel: ObservableObject {
         }
     }
 
+    func sendText(
+        _ text: String,
+        to destinationDeviceID: String
+    ) async -> Bool {
+        guard
+            let sourceDeviceID = localDeviceID,
+            !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        else {
+            return false
+        }
+
+        isLoading = true
+        defer { isLoading = false }
+
+        do {
+            _ = try await api.sendText(
+                text,
+                sourceDeviceID: sourceDeviceID,
+                destinationDeviceID: destinationDeviceID
+            )
+            await reload()
+            return true
+        } catch APIClient.APIError.refreshFailed {
+            await signOut()
+            errorMessage = "Your session expired. Sign in again."
+            return false
+        } catch {
+            errorMessage = error.localizedDescription
+            return false
+        }
+    }
+
+    private func receivePendingItems() async {
+        guard let localDeviceID else { return }
+
+        do {
+            let incoming = try await api.receiveReadyTextItems(
+                destinationDeviceID: localDeviceID
+            )
+            guard !incoming.isEmpty else { return }
+
+            var knownIDs = Set(receivedItems.map(\.id))
+            for item in incoming where !knownIDs.contains(item.id) {
+                receivedItems.insert(item, at: 0)
+                knownIDs.insert(item.id)
+            }
+        } catch APIClient.APIError.refreshFailed {
+            await signOut()
+            errorMessage = "Your session expired. Sign in again."
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
     private func prepareAuthenticatedSession() async {
         do {
             let device = try await api.ensureCurrentDevice(
                 name: UIDevice.current.name,
                 platform: "ios"
             )
+            localDeviceID = device.id
+
+            // Durable state is the recovery path if realtime was missed while
+            // the app was suspended or offline.
+            await receivePendingItems()
+
             startRealtime(deviceID: device.id)
             await reload()
         } catch APIClient.APIError.refreshFailed {
@@ -139,7 +203,10 @@ final class AppModel: ObservableObject {
                     try await self.api.openEvents(deviceID: deviceID)
 
                     while !Task.isCancelled {
-                        _ = try await self.api.nextEvent()
+                        let event = try await self.api.nextEvent()
+                        if event.type == "transfer.ready" {
+                            await self.receivePendingItems()
+                        }
                         await self.reload()
                     }
                 } catch {
