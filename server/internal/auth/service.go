@@ -120,6 +120,7 @@ func (s *Service) Refresh(ctx context.Context, refreshToken string) (TokenPair, 
 	}
 
 	return TokenPair{
+		UserID:           userID,
 		AccessToken:      access,
 		RefreshToken:     newRefresh,
 		TokenType:        "Bearer",
@@ -175,6 +176,7 @@ func (s *Service) issueSession(ctx context.Context, userID string) (TokenPair, e
 	}
 
 	return TokenPair{
+		UserID:           userID,
 		AccessToken:      access,
 		RefreshToken:     refresh,
 		TokenType:        "Bearer",
