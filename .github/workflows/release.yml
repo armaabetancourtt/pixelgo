@@ -161,7 +161,7 @@ jobs:
   production:
     name: Backend · promote production
     needs: [backend, staging]
-    if: ${{ always() && vars.PRODUCTION_DEPLOY_ENABLED == 'true' && (needs.staging.result == 'success' || needs.staging.result == 'skipped') }}
+    if: ${{ always() && vars.PRODUCTION_DEPLOY_ENABLED == 'true' && needs.staging.result == 'success' }}
     runs-on: ubuntu-latest
     environment:
       name: production
