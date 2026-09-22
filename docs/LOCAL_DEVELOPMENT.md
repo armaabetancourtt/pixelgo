@@ -175,8 +175,28 @@ Remaining storage work is operational rather than architectural:
 - quotas;
 - multipart/background behavior for very large payloads.
 
-## Push-development constraint
+## Push development
 
-APNs/FCM boundaries exist in the native projects, but real provider credentials and production push adapters are not committed.
+The APNs and FCM provider adapters are implemented, but credentials are intentionally absent from source control. Without provider credentials the API logs that push delivery is disabled; realtime WebSockets and the durable transfer state still work normally.
 
-The realtime WebSocket path is implemented independently of push wake-up.
+APNs configuration:
+
+~~~bash
+export APNS_KEY_ID='...'
+export APNS_TEAM_ID='...'
+export APNS_TOPIC='com.armaabetancourtt.pixelgo'
+export APNS_PRIVATE_KEY_B64='base64-of-p8-key'
+export APNS_SANDBOX=true
+~~~
+
+FCM configuration:
+
+~~~bash
+export FCM_SERVICE_ACCOUNT_JSON_B64='base64-of-service-account-json'
+~~~
+
+With PostgreSQL and at least one provider configured, the API starts the durable outbox worker. The worker prefers realtime: if Redis presence reports the destination online, it skips the provider call. Offline or unknown destinations use APNs/FCM and transient failures retry with bounded exponential backoff.
+
+Native clients register their current push token after device registration and update the backend when APNs/FCM rotates that token.
+
+Production credentials must be injected by the deployment platform, never committed.
