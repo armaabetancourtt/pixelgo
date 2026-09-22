@@ -35,4 +35,16 @@ struct KeychainStore {
         guard status == errSecSuccess else { throw KeychainError.unhandled(status) }
         return item as? Data
     }
+
+    func delete(account: String) throws {
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: "com.armaabetancourtt.pixelgo",
+            kSecAttrAccount as String: account
+        ]
+        let status = SecItemDelete(query as CFDictionary)
+        guard status == errSecSuccess || status == errSecItemNotFound else {
+            throw KeychainError.unhandled(status)
+        }
+    }
 }
