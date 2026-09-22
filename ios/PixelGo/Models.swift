@@ -1,6 +1,7 @@
 import Foundation
 
 struct TokenPair: Codable, Hashable {
+    let userId: String
     let accessToken: String
     let refreshToken: String
     let tokenType: String
