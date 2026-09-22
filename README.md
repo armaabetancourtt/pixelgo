@@ -78,7 +78,7 @@ PIXEL GO intentionally shares **no UI implementation** between platforms.
 | Local data boundary | native persistence boundary | Room |
 | Lifecycle | app / scene | activity / process |
 
-Both apps now implement native sign-in / account creation, restore encrypted sessions, send Bearer access tokens, rotate refresh tokens when needed and load devices, transfers and Online / Offline presence from the same Go API.
+Both apps now implement native sign-in / account creation, restore encrypted sessions, register the current device, maintain realtime presence, and send/receive text or links through the signed transfer lifecycle. Access tokens refresh automatically without double-rotating refresh credentials.
 
 **Same product semantics. Separate native codebases.**
 
@@ -140,17 +140,18 @@ Register Android
      ↓
 POST /v1/transfers
      ↓
-receive expiring HMAC-signed upload URL
+receive expiring S3-compatible presigned PUT URL
      ↓
-PUT real payload bytes
-     ↓
-server verifies declared size + SHA-256
+PUT bytes directly to object storage
+     + signed X-Amz-Meta-Sha256
      ↓
 POST /uploaded
      ↓
+API HEADs object: exact size + SHA-256 metadata
+     ↓
 transfer.ready
      ↓
-receive signed download URL
+receive presigned GET URL
      ↓
 GET the same bytes
      ↓
@@ -163,7 +164,7 @@ transfer.completed
 Delivered ✓
 ```
 
-For deterministic local development and CI, the current payload adapter stores bytes in process memory behind signed URLs. The file boundary is separated so a production S3/MinIO adapter can replace it without changing transfer-domain semantics.
+When `OBJECT_STORAGE_ENDPOINT` is configured, payload bytes bypass the Go API entirely: clients upload and download directly through S3-compatible presigned URLs. The upload signature requires `X-Amz-Meta-Sha256`; before a transfer can become `ready`, the API performs an object `HEAD` and verifies both exact size and the signed checksum metadata. CI executes this path against a real MinIO instance. An in-memory HMAC-signed adapter remains available only as an isolated local/test fallback.
 
 ## Retry safety across replicas
 
@@ -194,8 +195,10 @@ flowchart LR
 
     API --> PG[(PostgreSQL)]
     API --> R[(Redis)]
-    API --> FS[Signed File Boundary]
-    FS --> O[(S3 / MinIO production adapter)]
+    API --> FS[Presigned Object Boundary]
+    I -->|direct PUT / GET| O[(S3 / MinIO)]
+    A -->|direct PUT / GET| O
+    FS --> O
     API --> W[Workers]
     W --> P[APNs / FCM]
     RT <--> R
@@ -224,11 +227,13 @@ The split is executable, not just diagrammed.
 - cross-replica idempotency locks and replay records;
 - shared fixed-window rate limits.
 
-**File boundary**
+**Object storage**
 
-- expiring signed upload/download capabilities;
-- local in-memory bytes today;
-- S3-compatible object storage is the next adapter.
+- S3-compatible presigned PUT/GET capabilities;
+- payload bytes move directly between mobile clients and object storage;
+- the PUT signature binds `X-Amz-Meta-Sha256`;
+- the API validates object size + checksum metadata with `HEAD` before `transfer.ready`;
+- a local in-memory adapter remains as a fallback when object storage is not configured.
 
 Signed URLs are regenerated from transfer state and are deliberately **not persisted as durable credentials**.
 
@@ -363,11 +368,12 @@ Implemented:
 
 Current transfer security:
 
-- HMAC-SHA256 signed local transfer URLs;
-- action-specific upload/download signatures;
-- short expiry;
+- short-lived S3-compatible presigned PUT/GET URLs;
+- a signed `X-Amz-Meta-Sha256` upload requirement;
+- object `HEAD` validation before the lifecycle can advance to `ready`;
 - exact byte-count verification;
-- SHA-256 payload validation;
+- destination-side SHA-256 payload validation;
+- HMAC-signed local transfer URLs only in fallback mode;
 - user-scoped transfer metadata;
 - access/refresh token separation;
 - refresh-token family revocation.
@@ -388,26 +394,26 @@ Every push / PR validates independently built software:
         ┌────────────────────┼────────────────────┐
         ↓                    ↓                    ↓
    iOS native build     Android build       Go vet + race
-   Swift tests          JUnit tests         PostgreSQL + Redis
+   Swift tests          JUnit tests       PostgreSQL + Redis + MinIO
         │                    │                    ↓
         │                    │          authenticated binary E2E
         │                    │                    ↓
         └────────────────────┴────────────── Docker build
 ```
 
-The backend E2E runs with **authentication required**, PostgreSQL and Redis enabled. It proves:
+The backend E2E runs with **authentication required**, PostgreSQL, Redis and MinIO enabled. It proves:
 
 1. account creation;
 2. unauthenticated requests are rejected;
 3. user-scoped iPhone + Android registration;
 4. retry-safe transfer creation;
-5. real signed upload/download bytes;
-6. SHA-256 integrity;
+5. direct presigned PUT to MinIO with signed SHA-256 metadata;
+6. server-side object HEAD validation plus destination SHA-256 verification;
 7. completed delivery state;
 8. another account cannot see the devices or transfer;
 9. refresh rotation;
 10. old refresh-token reuse revokes the family;
-11. durable authenticated state survives an API restart.
+11. durable authenticated metadata survives an API restart while object bytes remain in MinIO.
 
 Release tags build independent backend, Android and iOS artifacts. Real store/deployment credentials are intentionally not committed.
 
@@ -493,8 +499,10 @@ Full setup: [docs/LOCAL_DEVELOPMENT.md](docs/LOCAL_DEVELOPMENT.md).
 - PostgreSQL runtime repositories;
 - Redis presence, Pub/Sub, idempotency and rate limiting;
 - WebSocket realtime hub;
-- signed binary upload/download development adapter;
-- exact-size and SHA-256 validation;
+- direct S3/MinIO presigned PUT/GET object storage;
+- signed checksum metadata + object HEAD verification;
+- exact-size and destination SHA-256 validation;
+- local in-memory signed adapter fallback;
 - cross-replica retry safety;
 - authenticated E2E lifecycle;
 - cross-platform CI;
@@ -504,9 +512,9 @@ Full setup: [docs/LOCAL_DEVELOPMENT.md](docs/LOCAL_DEVELOPMENT.md).
 
 ### Intentionally still pending
 
-- production S3/MinIO direct object-storage adapter;
+- object lifecycle / retention, quota and production bucket-policy hardening;
 - real APNs / FCM delivery adapters and push credentials;
-- complete mobile SEND picker/upload UX;
+- complete file/photo SEND picker and background upload UX;
 - background destination auto-download;
 - content end-to-end encryption;
 - physical iPhone → Android automated E2E;
