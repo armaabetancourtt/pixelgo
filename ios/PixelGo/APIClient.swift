@@ -156,7 +156,7 @@ actor APIClient {
                 destinationDeviceId: destinationDeviceID,
                 kind: kind.rawValue,
                 displayName: String(displayName.prefix(255)),
-                contentType: String(contentType.prefix(255)),
+                contentType: String(contentType.prefix(120)),
                 sizeBytes: Int64(payload.count),
                 sha256: checksum
             ),
