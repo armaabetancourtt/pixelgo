@@ -63,6 +63,7 @@ func main() {
 		authRepo = auth.NewPostgresRepository(pool)
 		deviceRepo = devices.NewPostgresRepository(pool)
 		transferRepo = transfers.NewPostgresRepository(pool)
+		notificationRepo = notifications.NewPostgresRepository(pool)
 		readinessChecks = append(
 			readinessChecks,
 			observability.Check{Name: "postgres", Run: pool.Ping},
