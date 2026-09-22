@@ -183,3 +183,35 @@ func TestOfflineOnlySenderFallsBackToPushWhenPresenceIsUnknown(t *testing.T) {
 		t.Fatalf("expected push fallback, got %d calls", next.calls)
 	}
 }
+
+
+type contextSender struct{}
+
+func (contextSender) Send(ctx context.Context, _ Delivery) error {
+	<-ctx.Done()
+	return ctx.Err()
+}
+
+func TestWorkerReleasesClaimWhenShutdownCancelsProvider(t *testing.T) {
+	repo := &fakeRepo{}
+	worker := NewWorker(
+		repo,
+		contextSender{},
+		slog.New(slog.NewTextHandler(io.Discard, nil)),
+	)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	worker.deliver(ctx, Delivery{
+		ID:       10,
+		Attempts: 0,
+	})
+
+	if len(repo.retried) != 1 || repo.retried[0] != 10 {
+		t.Fatalf("expected cancelled delivery to be released, got %#v", repo.retried)
+	}
+	if repo.final[0] {
+		t.Fatal("shutdown cancellation must remain retryable")
+	}
+}
