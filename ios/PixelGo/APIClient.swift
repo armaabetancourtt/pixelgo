@@ -6,6 +6,7 @@ actor APIClient {
         case server(status: Int)
         case noSession
         case refreshFailed
+        case realtimeNotConnected
 
         var errorDescription: String? {
             switch self {
@@ -17,6 +18,8 @@ actor APIClient {
                 return "Sign in to continue."
             case .refreshFailed:
                 return "Your session expired. Sign in again."
+            case .realtimeNotConnected:
+                return "Realtime connection is not active."
             }
         }
     }
@@ -27,6 +30,7 @@ actor APIClient {
     private let decoder: JSONDecoder
     private let encoder = JSONEncoder()
     private var refreshTask: Task<TokenPair, Error>?
+    private var webSocketTask: URLSessionWebSocketTask?
     private var refreshTask: Task<TokenPair, Error>?
 
     init(
@@ -62,9 +66,108 @@ actor APIClient {
     }
 
     func signOut() async {
+        closeEvents()
         refreshTask?.cancel()
         refreshTask = nil
         try? await sessionStore.clear()
+    }
+
+    func ensureCurrentDevice(
+        name: String,
+        platform: String
+    ) async throws -> PixelDevice {
+        guard let pair = try await sessionStore.load() else {
+            throw APIError.noSession
+        }
+
+        if let storedID = try await sessionStore.deviceID(for: pair.userId) {
+            let devices: [PixelDevice] = try await listDevices()
+            if let existing = devices.first(where: { $0.id == storedID }) {
+                return existing
+            }
+        }
+
+        let idempotencyKey = try await sessionStore.registrationKey(
+            for: pair.userId
+        )
+        let body = RegisterDeviceRequest(
+            name: String(name.prefix(120)),
+            platform: platform,
+            pushToken: nil
+        )
+
+        var request = URLRequest(url: baseURL.appending(path: "/v1/devices"))
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue(idempotencyKey, forHTTPHeaderField: "Idempotency-Key")
+        request.httpBody = try encoder.encode(body)
+
+        let device: PixelDevice = try await performAuthenticated(
+            request,
+            retryAfterRefresh: true
+        )
+        try await sessionStore.saveDeviceID(device.id, for: pair.userId)
+        return device
+    }
+
+    func openEvents(deviceID: String) async throws {
+        guard let pair = try await sessionStore.load() else {
+            throw APIError.noSession
+        }
+
+        closeEvents()
+
+        guard var components = URLComponents(
+            url: baseURL,
+            resolvingAgainstBaseURL: false
+        ) else {
+            throw APIError.invalidResponse
+        }
+        components.scheme = baseURL.scheme == "https" ? "wss" : "ws"
+        components.path = "/v1/events"
+        components.queryItems = [
+            URLQueryItem(name: "deviceId", value: deviceID)
+        ]
+        guard let url = components.url else {
+            throw APIError.invalidResponse
+        }
+
+        var request = URLRequest(url: url)
+        request.setValue(
+            "\(pair.tokenType) \(pair.accessToken)",
+            forHTTPHeaderField: "Authorization"
+        )
+
+        let task = session.webSocketTask(with: request)
+        webSocketTask = task
+        task.resume()
+    }
+
+    func nextEvent() async throws -> RealtimeEventEnvelope {
+        guard let webSocketTask else {
+            throw APIError.realtimeNotConnected
+        }
+
+        let message = try await webSocketTask.receive()
+        let data: Data
+        switch message {
+        case .data(let value):
+            data = value
+        case .string(let value):
+            guard let encoded = value.data(using: .utf8) else {
+                throw APIError.invalidResponse
+            }
+            data = encoded
+        @unknown default:
+            throw APIError.invalidResponse
+        }
+        return try decoder.decode(RealtimeEventEnvelope.self, from: data)
+    }
+
+    func closeEvents() {
+        webSocketTask?.cancel(with: .goingAway, reason: nil)
+        webSocketTask = nil
     }
 
     func listDevices() async throws -> [PixelDevice] {
