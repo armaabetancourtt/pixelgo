@@ -5,6 +5,7 @@ import com.armaabetancourtt.pixelgo.model.Transfer
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
+import org.json.JSONObject
 import java.net.HttpURLConnection
 import java.net.URL
 
@@ -27,6 +28,11 @@ class ApiClient(private val baseUrl: String) {
                 )
             }
         }
+    }
+
+    suspend fun isDeviceOnline(deviceId: String): Boolean {
+        val item = JSONObject(get("/v1/presence/$deviceId"))
+        return item.getBoolean("online")
     }
 
     suspend fun listTransfers(): List<Transfer> {
