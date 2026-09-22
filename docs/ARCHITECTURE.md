@@ -23,10 +23,17 @@ Jetpack Compose renders the product. Coroutines coordinate API work. Android Key
 The Go service owns authentication, device registration, transfer metadata and authorization decisions. It should not proxy large files through application memory.
 
 ### PostgreSQL
-Source of truth for users, devices, refresh-token families and transfer metadata.
+Runtime source of truth for registered devices and transfer metadata. The API can fall back to in-memory repositories when `DATABASE_URL` is absent, but CI runs against PostgreSQL and proves state survives a backend restart. The schema also reserves the user/auth boundary for the next milestone.
 
 ### Redis
-Ephemeral presence, connection routing, bounded rate-limit counters and short-lived coordination.
+Runtime source of truth for ephemeral coordination when `REDIS_URL` is configured:
+
+- device presence with TTL heartbeats;
+- Pub/Sub event fan-out across API replicas;
+- cross-replica idempotency locks + replay records;
+- shared fixed-window API rate limits.
+
+The application retains in-memory adapters for isolated local tests.
 
 ### Object storage
 Payload bytes. Objects are addressed by opaque keys and accessed through short-lived signed URLs.
@@ -56,6 +63,25 @@ sequenceDiagram
     API->>RT: transfer.completed
     RT-->>S: Delivered ✓
 ```
+
+## State ownership
+
+```text
+PostgreSQL
+  ├── registered devices
+  └── transfer metadata / lifecycle
+
+Redis
+  ├── presence TTL
+  ├── realtime Pub/Sub
+  ├── idempotency coordination
+  └── shared rate-limit counters
+
+File adapter
+  └── payload bytes
+```
+
+Signed upload/download URLs are derived from transfer state and deliberately not persisted as durable credentials.
 
 ## Scaling path
 
