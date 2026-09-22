@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -31,6 +32,51 @@ func TestIdempotencyReplaysIdenticalRequest(t *testing.T) {
 	}
 	if first.Body.String() != second.Body.String() {
 		t.Fatalf("expected identical response bodies, got %q and %q", first.Body.String(), second.Body.String())
+	}
+}
+
+func TestIdempotencyCoalescesConcurrentRetries(t *testing.T) {
+	var calls int32
+	started := make(chan struct{})
+	release := make(chan struct{})
+
+	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if atomic.AddInt32(&calls, 1) == 1 {
+			close(started)
+		}
+		<-release
+		writeJSON(w, http.StatusCreated, map[string]string{"id": "tr_one"})
+	})
+	handler := withJSON(withIdempotency(next, newIdempotencyStore(time.Hour)))
+
+	var first, second *httptest.ResponseRecorder
+	var wg sync.WaitGroup
+	wg.Add(2)
+
+	go func() {
+		defer wg.Done()
+		first = idempotentRequest(handler, "parallel-key", []byte(`{"kind":"photo"}`))
+	}()
+
+	<-started
+
+	go func() {
+		defer wg.Done()
+		second = idempotentRequest(handler, "parallel-key", []byte(`{"kind":"photo"}`))
+	}()
+
+	time.Sleep(20 * time.Millisecond)
+	close(release)
+	wg.Wait()
+
+	if got := atomic.LoadInt32(&calls); got != 1 {
+		t.Fatalf("expected one mutation execution, got %d", got)
+	}
+	if first.Code != http.StatusCreated || second.Code != http.StatusCreated {
+		t.Fatalf("expected both requests to receive 201, got %d/%d", first.Code, second.Code)
+	}
+	if first.Body.String() != second.Body.String() {
+		t.Fatalf("expected identical responses, got %q and %q", first.Body.String(), second.Body.String())
 	}
 }
 
