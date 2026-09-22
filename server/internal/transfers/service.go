@@ -18,22 +18,7 @@ const (
 	maxContentTypeRunes         = 120
 )
 
-var checksumPattern = regexp.MustCompile(`^[a-fA-F0-9]{64}package transfers
-
-import (
-	"context"
-	"crypto/rand"
-	"encoding/hex"
-	"errors"
-	"io/fs"
-	"regexp"
-	"strings"
-	"time"
-	"unicode/utf8"
-)
-
-)
-
+var checksumPattern = regexp.MustCompile(`^[a-fA-F0-9]{64}$`)
 var (
 	ErrNotFound          = errors.New("transfer not found")
 	ErrInvalidTransition = errors.New("invalid transfer state transition")
