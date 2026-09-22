@@ -12,6 +12,7 @@ import (
 	"github.com/armaabetancourtt/pixelgo/server/internal/files"
 	"github.com/armaabetancourtt/pixelgo/server/internal/httpapi"
 	"github.com/armaabetancourtt/pixelgo/server/internal/platform/postgresdb"
+	"github.com/armaabetancourtt/pixelgo/server/internal/presence"
 	"github.com/armaabetancourtt/pixelgo/server/internal/realtime"
 	"github.com/armaabetancourtt/pixelgo/server/internal/transfers"
 )
@@ -47,9 +48,31 @@ func main() {
 		log.Printf("pixelgo persistence: in-memory")
 	}
 
-	hub := realtime.NewHub()
+	var presenceStore presence.Store = presence.NewMemoryStore()
+	if redisURL := os.Getenv("REDIS_URL"); redisURL != "" {
+		redisPresence, err := presence.NewRedisStore(redisURL)
+		if err != nil {
+			log.Fatal(err)
+		}
+
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		if err := redisPresence.Ping(ctx); err != nil {
+			cancel()
+			_ = redisPresence.Close()
+			log.Fatal(err)
+		}
+		cancel()
+
+		defer func() { _ = redisPresence.Close() }()
+		presenceStore = redisPresence
+		log.Printf("pixelgo presence: redis leases")
+	} else {
+		log.Printf("pixelgo presence: in-memory leases")
+	}
+
+	hub := realtime.NewHub(presenceStore)
 	fileService := files.NewService(baseURL, signingSecret, 10*time.Minute)
-	deviceService := devices.NewService(deviceRepo)
+	deviceService := devices.NewService(deviceRepo, presenceStore)
 	transferService := transfers.NewService(transferRepo, hub, fileService)
 	handler := httpapi.New(deviceService, transferService, hub, fileService)
 
