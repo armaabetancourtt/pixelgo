@@ -7,6 +7,22 @@ CREATE TABLE IF NOT EXISTS users (
   created_at timestamptz NOT NULL DEFAULT now()
 );
 
+CREATE TABLE IF NOT EXISTS refresh_tokens (
+  token_hash char(64) PRIMARY KEY,
+  user_id uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  family_id text NOT NULL,
+  expires_at timestamptz NOT NULL,
+  used_at timestamptz,
+  revoked_at timestamptz,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS refresh_tokens_family_idx
+  ON refresh_tokens(family_id);
+
+CREATE INDEX IF NOT EXISTS refresh_tokens_user_idx
+  ON refresh_tokens(user_id, created_at DESC);
+
 CREATE TABLE IF NOT EXISTS devices (
   id text PRIMARY KEY,
   user_id uuid REFERENCES users(id) ON DELETE CASCADE,
