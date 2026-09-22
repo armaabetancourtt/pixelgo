@@ -6,6 +6,12 @@ import (
 	"encoding/hex"
 	"errors"
 	"time"
+	"unicode/utf8"
+)
+
+const (
+	maxDeviceNameRunes = 120
+	maxPushTokenRunes  = 4096
 )
 
 var ErrNotFound = errors.New("device not found")
@@ -49,7 +55,10 @@ func NewService(repositories ...Repository) *Service {
 }
 
 func (s *Service) Register(ctx context.Context, in RegisterInput) (Device, error) {
-	if in.Name == "" || (in.Platform != "ios" && in.Platform != "android") {
+	if utf8.RuneCountInString(in.Name) < 1 ||
+		utf8.RuneCountInString(in.Name) > maxDeviceNameRunes ||
+		utf8.RuneCountInString(in.PushToken) > maxPushTokenRunes ||
+		(in.Platform != "ios" && in.Platform != "android") {
 		return Device{}, errors.New("invalid device")
 	}
 
@@ -80,7 +89,7 @@ func (s *Service) UpdatePushToken(
 	id string,
 	token string,
 ) (Device, error) {
-	if id == "" || len(token) > 4096 {
+	if id == "" || utf8.RuneCountInString(token) > maxPushTokenRunes {
 		return Device{}, errors.New("invalid push token")
 	}
 	return s.repo.UpdatePushToken(ctx, id, token)
