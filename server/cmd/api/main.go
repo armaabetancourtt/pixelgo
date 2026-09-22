@@ -2,7 +2,7 @@ package main
 
 import (
 	"context"
-	"log"
+	"log/slog"
 	"net/http"
 	"os"
 	"strings"
@@ -12,6 +12,7 @@ import (
 	"github.com/armaabetancourtt/pixelgo/server/internal/devices"
 	"github.com/armaabetancourtt/pixelgo/server/internal/files"
 	"github.com/armaabetancourtt/pixelgo/server/internal/httpapi"
+	"github.com/armaabetancourtt/pixelgo/server/internal/observability"
 	"github.com/armaabetancourtt/pixelgo/server/internal/platform/postgresdb"
 	"github.com/armaabetancourtt/pixelgo/server/internal/platform/redisdb"
 	"github.com/armaabetancourtt/pixelgo/server/internal/presence"
@@ -21,13 +22,17 @@ import (
 )
 
 func main() {
+	logger := newLogger()
+	slog.SetDefault(logger)
+	metrics := observability.NewMetrics()
+
 	addr := env("PIXELGO_ADDR", ":8080")
 	baseURL := env("PIXELGO_PUBLIC_BASE_URL", "http://localhost:8080")
 	signingSecret := env("PIXELGO_SIGNING_SECRET", "pixelgo-local-signing-secret-change-me")
 	jwtSecret := env("PIXELGO_JWT_SECRET", "pixelgo-local-jwt-secret-change-me-32")
 	requireAuth := envBool("PIXELGO_REQUIRE_AUTH", false)
 	if len(jwtSecret) < 32 {
-		log.Fatal("PIXELGO_JWT_SECRET must be at least 32 bytes")
+		fatal(logger, "invalid configuration", "error", "PIXELGO_JWT_SECRET must be at least 32 bytes")
 	}
 
 	var authRepo auth.Repository = auth.NewMemoryRepository()
@@ -40,22 +45,22 @@ func main() {
 
 		pool, err := postgresdb.Open(ctx, databaseURL)
 		if err != nil {
-			log.Fatal(err)
+			fatal(logger, "startup failed", "error", err)
 		}
 		defer pool.Close()
 
 		if envBool("PIXELGO_AUTO_MIGRATE", true) {
 			if err := postgresdb.Migrate(ctx, pool); err != nil {
-				log.Fatal(err)
+				fatal(logger, "startup failed", "error", err)
 			}
 		}
 
 		authRepo = auth.NewPostgresRepository(pool)
 		deviceRepo = devices.NewPostgresRepository(pool)
 		transferRepo = transfers.NewPostgresRepository(pool)
-		log.Printf("pixelgo persistence: postgres")
+		logger.Info("persistence configured", "adapter", "postgres")
 	} else {
-		log.Printf("pixelgo persistence: in-memory")
+		logger.Info("persistence configured", "adapter", "in-memory")
 	}
 
 	var presenceStore presence.Store = presence.NewMemoryStore()
@@ -69,7 +74,7 @@ func main() {
 
 		redisClient, err := redisdb.Open(ctx, redisURL)
 		if err != nil {
-			log.Fatal(err)
+			fatal(logger, "startup failed", "error", err)
 		}
 		defer redisClient.Close()
 
@@ -77,9 +82,9 @@ func main() {
 		requestLimiter = ratelimit.NewRedisLimiter(redisClient)
 		broker = realtime.NewRedisBroker(redisClient)
 		httpOptions = append(httpOptions, httpapi.WithRedisIdempotency(redisClient))
-		log.Printf("pixelgo ephemeral state: redis")
+		logger.Info("ephemeral state configured", "adapter", "redis")
 	} else {
-		log.Printf("pixelgo ephemeral state: in-memory")
+		logger.Info("ephemeral state configured", "adapter", "in-memory")
 	}
 
 	hubOptions := []realtime.Option{
@@ -108,13 +113,13 @@ func main() {
 			AutoCreate: envBool("OBJECT_STORAGE_AUTO_CREATE", false),
 		})
 		if err != nil {
-			log.Fatal(err)
+			fatal(logger, "startup failed", "error", err)
 		}
 		fileService = storage
-		log.Printf("pixelgo payload storage: s3-compatible")
+		logger.Info("payload storage configured", "adapter", "s3-compatible")
 	} else {
 		fileService = files.NewService(baseURL, signingSecret, 10*time.Minute)
-		log.Printf("pixelgo payload storage: in-memory development adapter")
+		logger.Info("payload storage configured", "adapter", "in-memory-development")
 	}
 
 	authService := auth.NewService(authRepo, []byte(jwtSecret))
@@ -125,13 +130,18 @@ func main() {
 		httpapi.WithPresence(presenceStore),
 		httpapi.WithRateLimiter(requestLimiter),
 		httpapi.WithAuth(authService, requireAuth),
+		httpapi.WithMetrics(metrics.Handler()),
 	)
-	handler := httpapi.New(
-		deviceService,
-		transferService,
-		hub,
-		fileService,
-		httpOptions...,
+	handler := observability.Middleware(
+		httpapi.New(
+			deviceService,
+			transferService,
+			hub,
+			fileService,
+			httpOptions...,
+		),
+		logger,
+		metrics,
 	)
 
 	server := &http.Server{
@@ -143,7 +153,7 @@ func main() {
 
 	log.Printf("pixelgo api listening on %s", addr)
 	if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-		log.Fatal(err)
+		fatal(logger, "startup failed", "error", err)
 	}
 }
 
