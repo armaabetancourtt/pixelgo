@@ -25,6 +25,10 @@ actor APIClient {
         try await get("/v1/transfers")
     }
 
+    func devicePresence(_ deviceID: String) async throws -> DevicePresence {
+        try await get("/v1/presence/\(deviceID)")
+    }
+
     private func get<T: Decodable>(_ path: String) async throws -> T {
         let url = baseURL.appending(path: path)
         var request = URLRequest(url: url)
