@@ -12,6 +12,7 @@ import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.InputStream
+import java.io.OutputStream
 import java.net.HttpURLConnection
 import java.net.URL
 import java.security.MessageDigest
@@ -288,6 +289,26 @@ class ApiClient(
         return payload
     }
 
+    suspend fun downloadPayloadTo(
+        transfer: Transfer,
+        openOutputStream: () -> OutputStream
+    ) {
+        val downloadUrl = transfer.downloadUrl ?: throw InvalidTransferException(
+            "Server did not return a download URL."
+        )
+
+        val metadata = downloadSignedTo(
+            url = downloadUrl,
+            openOutputStream = openOutputStream
+        )
+        if (metadata.sizeBytes != transfer.sizeBytes) {
+            throw ChecksumMismatchException()
+        }
+        if (!metadata.sha256.equals(transfer.sha256, ignoreCase = true)) {
+            throw ChecksumMismatchException()
+        }
+    }
+
     suspend fun completeTransfer(transferId: String): Transfer {
         return parseTransfer(
             JSONObject(
@@ -510,6 +531,49 @@ class ApiClient(
             if (status !in 200..299) {
                 throw ApiException(status, readResponse(connection, status))
             }
+        } finally {
+            connection.disconnect()
+        }
+    }
+
+    private suspend fun downloadSignedTo(
+        url: String,
+        openOutputStream: () -> OutputStream
+    ): StreamMetadata = withContext(Dispatchers.IO) {
+        val connection = URL(url).openConnection() as HttpURLConnection
+        try {
+            connection.requestMethod = "GET"
+            connection.connectTimeout = 10_000
+            connection.readTimeout = 10_000
+
+            val status = connection.responseCode
+            if (status !in 200..299) {
+                throw ApiException(status, readResponse(connection, status))
+            }
+
+            val digest = MessageDigest.getInstance("SHA-256")
+            var total = 0L
+            val buffer = ByteArray(64 * 1024)
+
+            connection.inputStream.use { input ->
+                openOutputStream().use { output ->
+                    while (true) {
+                        val count = input.read(buffer)
+                        if (count < 0) break
+                        if (count == 0) continue
+                        output.write(buffer, 0, count)
+                        digest.update(buffer, 0, count)
+                        total += count.toLong()
+                    }
+                    output.flush()
+                }
+            }
+
+            StreamMetadata(
+                sizeBytes = total,
+                sha256 = digest.digest()
+                    .joinToString("") { byte -> "%02x".format(byte) }
+            )
         } finally {
             connection.disconnect()
         }
