@@ -5,6 +5,7 @@ struct PixelDevice: Codable, Identifiable, Hashable {
     let name: String
     let platform: String
     let pushToken: String?
+    let online: Bool
     let createdAt: Date
 }
 
