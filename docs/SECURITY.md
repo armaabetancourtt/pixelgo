@@ -25,16 +25,20 @@ See [AUTH.md](AUTH.md).
 
 ## Files
 
-Current local/E2E transfer protection:
+The configured production-style path uses S3-compatible object storage:
 
-- short-lived HMAC-signed upload/download URLs;
-- signatures scoped to action + transfer ID + expiry;
-- transfer-state checks before upload/download;
-- exact payload-size verification;
-- SHA-256 integrity validation;
-- user-scoped transfer metadata.
+- short-lived presigned PUT/GET URLs;
+- mobile payload bytes bypass the Go API;
+- the PUT requires `X-Amz-Meta-Sha256` and that header is part of the SigV4 signature;
+- `POST /uploaded` performs an authenticated object `HEAD`;
+- exact object size must match transfer metadata;
+- stored SHA-256 metadata must match the transfer checksum;
+- the destination independently hashes downloaded bytes before marking delivery complete;
+- transfer metadata remains user-scoped.
 
-The current payload adapter is deliberately local/in-memory. Production object storage remains a separate adapter milestone.
+This prevents the sender from advancing a transfer to `ready` merely by calling the API without first placing the expected object in storage. It also makes checksum metadata tampering invalidate the signed PUT.
+
+An HMAC-signed in-memory adapter remains available only when object storage is not configured.
 
 This repository does not claim end-to-end content encryption. TLS protects transport; SHA-256 validates content integrity.
 
@@ -44,7 +48,8 @@ This repository does not claim end-to-end content encryption. TLS protects trans
 - cleartext endpoints exist only for simulator/emulator development;
 - protected REST routes require Bearer access tokens when auth is enabled;
 - WebSocket upgrades require an authenticated user and owned device ID;
-- signed file routes use capability URLs rather than Bearer auth.
+- S3-compatible upload/download routes use short-lived capability URLs rather than Bearer auth;
+- local fallback file routes use HMAC capability URLs and are disabled while S3-compatible storage is active.
 
 ## Retry safety
 
@@ -98,7 +103,8 @@ Example local values are development-only.
 
 ## Remaining security milestones
 
-- production S3/MinIO object-storage adapter;
+- production bucket policies / cloud IAM hardening;
+- object lifecycle, retention and deletion policy;
 - real APNs/FCM delivery credentials;
 - upload quotas;
 - structured security audit events;
