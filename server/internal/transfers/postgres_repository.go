@@ -32,7 +32,8 @@ func (r *PostgresRepository) Create(ctx context.Context, t Transfer) (Transfer, 
 			created_at,
 			updated_at
 		) VALUES (
-			$1, $2, $3, $4, $5, NULLIF($6, ''), NULLIF($7, ''), $8, $9, $10, $11
+			$1, $2, $3, $4::transfer_kind, $5::transfer_status,
+			NULLIF($6, ''), NULLIF($7, ''), $8, $9, $10, $11
 		)`,
 		t.ID,
 		t.SourceDeviceID,
@@ -120,13 +121,16 @@ func (r *PostgresRepository) Update(ctx context.Context, t Transfer) (Transfer, 
 	tag, err := r.db.Exec(
 		ctx,
 		`UPDATE transfers
-		 SET status = $2,
+		 SET status = $2::transfer_status,
 		     display_name = NULLIF($3, ''),
 		     content_type = NULLIF($4, ''),
 		     size_bytes = $5,
 		     sha256 = $6,
 		     updated_at = $7,
-		     completed_at = CASE WHEN $2 = 'completed' THEN $7 ELSE completed_at END
+		     completed_at = CASE
+		       WHEN $2::transfer_status = 'completed'::transfer_status THEN $7
+		       ELSE completed_at
+		     END
 		 WHERE id = $1`,
 		t.ID,
 		string(t.Status),
