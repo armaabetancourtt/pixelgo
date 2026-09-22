@@ -228,6 +228,22 @@ final class AppModel: ObservableObject {
         }
     }
 
+    func downloadPayloadFile(for transfer: Transfer) async -> URL? {
+        isLoading = true
+        defer { isLoading = false }
+
+        do {
+            return try await api.downloadPayloadFile(for: transfer)
+        } catch APIClient.APIError.refreshFailed {
+            await signOut()
+            errorMessage = "Your session expired. Sign in again."
+            return nil
+        } catch {
+            errorMessage = error.localizedDescription
+            return nil
+        }
+    }
+
     func completeIncomingTransfer(_ transferID: String) async {
         do {
             _ = try await api.completeTransfer(transferID)
