@@ -180,6 +180,48 @@ actor APIClient {
         )
     }
 
+    func sendFile(
+        at fileURL: URL,
+        kind: Transfer.Kind,
+        displayName: String,
+        contentType: String,
+        sourceDeviceID: String,
+        destinationDeviceID: String
+    ) async throws -> Transfer {
+        let metadata = try await Self.inspectFile(fileURL)
+
+        let created: Transfer = try await authenticatedPost(
+            "/v1/transfers",
+            body: CreateTransferRequest(
+                sourceDeviceId: sourceDeviceID,
+                destinationDeviceId: destinationDeviceID,
+                kind: kind.rawValue,
+                displayName: String(displayName.prefix(255)),
+                contentType: String(contentType.prefix(120)),
+                sizeBytes: metadata.sizeBytes,
+                sha256: metadata.sha256
+            ),
+            idempotencyKey: "transfer-create-\(UUID().uuidString.lowercased())"
+        )
+
+        guard let uploadURL = created.uploadUrl else {
+            throw APIError.invalidResponse
+        }
+
+        try await uploadFile(
+            fileURL,
+            to: uploadURL,
+            contentType: contentType,
+            sha256: metadata.sha256,
+            sizeBytes: metadata.sizeBytes
+        )
+
+        return try await authenticatedMutation(
+            "/v1/transfers/\(created.id)/uploaded",
+            idempotencyKey: "transfer-uploaded-\(created.id)"
+        )
+    }
+
     func receiveReadyTextItems(
         destinationDeviceID: String
     ) async throws -> [ReceivedTextItem] {
@@ -405,6 +447,58 @@ actor APIClient {
         else {
             throw APIError.invalidResponse
         }
+    }
+
+    private func uploadFile(
+        _ fileURL: URL,
+        to url: URL,
+        contentType: String,
+        sha256: String,
+        sizeBytes: Int64
+    ) async throws {
+        var request = URLRequest(url: url)
+        request.httpMethod = "PUT"
+        request.setValue(contentType, forHTTPHeaderField: "Content-Type")
+        request.setValue(String(sizeBytes), forHTTPHeaderField: "Content-Length")
+        request.setValue(sha256, forHTTPHeaderField: "X-Amz-Meta-Sha256")
+
+        let (_, response) = try await session.upload(
+            for: request,
+            fromFile: fileURL
+        )
+        guard
+            let http = response as? HTTPURLResponse,
+            (200..<300).contains(http.statusCode)
+        else {
+            throw APIError.invalidResponse
+        }
+    }
+
+    private static func inspectFile(
+        _ fileURL: URL
+    ) async throws -> (sizeBytes: Int64, sha256: String) {
+        try await Task.detached(priority: .utility) {
+            let handle = try FileHandle(forReadingFrom: fileURL)
+            defer { try? handle.close() }
+
+            var hasher = SHA256()
+            var total: Int64 = 0
+
+            while true {
+                let chunk = try handle.read(upToCount: 1 << 20) ?? Data()
+                if chunk.isEmpty {
+                    break
+                }
+                total += Int64(chunk.count)
+                hasher.update(data: chunk)
+            }
+
+            let checksum = hasher.finalize()
+                .map { String(format: "%02x", $0) }
+                .joined()
+
+            return (total, checksum)
+        }.value
     }
 
     private func inferredTextKind(_ value: String) -> Transfer.Kind {
