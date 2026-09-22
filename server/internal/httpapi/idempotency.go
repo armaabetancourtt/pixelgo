@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"io"
 	"net/http"
 	"sync"
@@ -11,6 +12,8 @@ import (
 )
 
 const maxIdempotentBodyBytes = 1 << 20
+
+var errRequestBodyTooLarge = errors.New("request body too large")
 
 type idempotencyEntry struct {
 	fingerprint string
@@ -46,16 +49,15 @@ func withIdempotency(next http.Handler, store *idempotencyStore) http.Handler {
 			return
 		}
 
-		body, err := io.ReadAll(io.LimitReader(r.Body, maxIdempotentBodyBytes+1))
+		body, err := readRequestBody(r)
 		if err != nil {
-			writeError(w, http.StatusBadRequest, "invalid_request", "could not read request body")
+			if errors.Is(err, errRequestBodyTooLarge) {
+				writeError(w, http.StatusRequestEntityTooLarge, "request_too_large", "request body exceeds 1 MiB")
+			} else {
+				writeError(w, http.StatusBadRequest, "invalid_request", "could not read request body")
+			}
 			return
 		}
-		if len(body) > maxIdempotentBodyBytes {
-			writeError(w, http.StatusRequestEntityTooLarge, "request_too_large", "request body exceeds 1 MiB")
-			return
-		}
-		r.Body = io.NopCloser(bytes.NewReader(body))
 
 		fingerprint := requestFingerprint(r, body)
 		now := time.Now()
@@ -105,6 +107,18 @@ func withIdempotency(next http.Handler, store *idempotencyStore) http.Handler {
 		w.WriteHeader(recorder.status)
 		_, _ = w.Write(recorder.body.Bytes())
 	})
+}
+
+func readRequestBody(r *http.Request) ([]byte, error) {
+	body, err := io.ReadAll(io.LimitReader(r.Body, maxIdempotentBodyBytes+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(body) > maxIdempotentBodyBytes {
+		return nil, errRequestBodyTooLarge
+	}
+	r.Body = io.NopCloser(bytes.NewReader(body))
+	return body, nil
 }
 
 func requestFingerprint(r *http.Request, body []byte) string {
