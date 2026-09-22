@@ -22,7 +22,8 @@ class ApiClient(private val baseUrl: String) {
                     PixelDevice(
                         id = item.getString("id"),
                         name = item.getString("name"),
-                        platform = item.getString("platform")
+                        platform = item.getString("platform"),
+                        online = item.optBoolean("online", false)
                     )
                 )
             }
