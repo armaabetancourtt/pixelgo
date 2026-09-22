@@ -95,9 +95,21 @@ private struct AuthView: View {
 private struct HomeView: View {
     @EnvironmentObject private var model: AppModel
     @State private var showingSend = false
+    @State private var showingExporter = false
+    @State private var exportDocument = PayloadDocument(data: Data())
+    @State private var exportFilename = "PIXEL-GO-File"
+    @State private var exportTransferID: String?
 
     private var destinationDevices: [PixelDevice] {
         model.devices.filter { $0.id != model.localDeviceID }
+    }
+
+    private var readyBinaryTransfers: [Transfer] {
+        model.transfers.filter {
+            $0.destinationDeviceId == model.localDeviceID &&
+            $0.status == .ready &&
+            ($0.kind == .file || $0.kind == .photo)
+        }
     }
 
     var body: some View {
@@ -170,6 +182,52 @@ private struct HomeView: View {
                     }
                 }
 
+                if !readyBinaryTransfers.isEmpty {
+                    Section("READY TO SAVE") {
+                        ForEach(readyBinaryTransfers) { transfer in
+                            HStack {
+                                VStack(alignment: .leading, spacing: 4) {
+                                    Text(
+                                        transfer.displayName
+                                            ?? (transfer.kind == .photo ? "Photo" : "File")
+                                    )
+                                    .font(.headline)
+
+                                    Text(
+                                        ByteCountFormatter.string(
+                                            fromByteCount: transfer.sizeBytes,
+                                            countStyle: .file
+                                        )
+                                    )
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                }
+
+                                Spacer()
+
+                                Button("Save") {
+                                    Task {
+                                        guard let data = await model.downloadPayload(
+                                            for: transfer
+                                        ) else {
+                                            return
+                                        }
+
+                                        exportDocument = PayloadDocument(data: data)
+                                        exportFilename = transfer.displayName
+                                            ?? (transfer.kind == .photo
+                                                ? "PIXEL-GO-Photo"
+                                                : "PIXEL-GO-File")
+                                        exportTransferID = transfer.id
+                                        showingExporter = true
+                                    }
+                                }
+                                .disabled(model.isLoading)
+                            }
+                        }
+                    }
+                }
+
                 Section("RECENT") {
                     if model.transfers.isEmpty {
                         Text("Nothing sent yet")
@@ -218,6 +276,24 @@ private struct HomeView: View {
             .sheet(isPresented: $showingSend) {
                 SendView(destinations: destinationDevices)
                     .environmentObject(model)
+            }
+            .fileExporter(
+                isPresented: $showingExporter,
+                document: exportDocument,
+                contentType: .data,
+                defaultFilename: exportFilename
+            ) { result in
+                switch result {
+                case .success:
+                    guard let transferID = exportTransferID else { return }
+                    Task {
+                        await model.completeIncomingTransfer(transferID)
+                        exportTransferID = nil
+                    }
+                case .failure(let error):
+                    model.errorMessage = error.localizedDescription
+                    exportTransferID = nil
+                }
             }
             .navigationBarHidden(true)
         }
@@ -407,5 +483,24 @@ private struct SendView: View {
         } catch {
             model.errorMessage = error.localizedDescription
         }
+    }
+}
+
+
+private struct PayloadDocument: FileDocument {
+    static var readableContentTypes: [UTType] { [.data] }
+
+    var data: Data
+
+    init(data: Data) {
+        self.data = data
+    }
+
+    init(configuration: ReadConfiguration) throws {
+        data = configuration.file.regularFileContents ?? Data()
+    }
+
+    func fileWrapper(configuration: WriteConfiguration) throws -> FileWrapper {
+        FileWrapper(regularFileWithContents: data)
     }
 }
