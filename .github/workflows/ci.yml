@@ -65,6 +65,8 @@ jobs:
       DATABASE_URL: postgres://pixelgo:pixelgo@127.0.0.1:5432/pixelgo?sslmode=disable
       REDIS_URL: redis://127.0.0.1:6379/0
       PIXELGO_AUTO_MIGRATE: "true"
+      PIXELGO_REQUIRE_AUTH: "true"
+      PIXELGO_JWT_SECRET: "ci-only-jwt-secret-0123456789abcdef"
     defaults:
       run:
         working-directory: server
@@ -126,16 +128,38 @@ jobs:
           import json
           import urllib.request
 
-          def get(path):
-              with urllib.request.urlopen("http://127.0.0.1:8080" + path, timeout=3) as response:
-                  return json.loads(response.read())
+          def request(method, path, body=None, token=None):
+              data = None if body is None else json.dumps(body).encode()
+              req = urllib.request.Request(
+                  "http://127.0.0.1:8080" + path,
+                  data=data,
+                  method=method,
+              )
+              req.add_header("Accept", "application/json")
+              if data is not None:
+                  req.add_header("Content-Type", "application/json")
+              if token is not None:
+                  req.add_header("Authorization", "Bearer " + token)
+              with urllib.request.urlopen(req, timeout=3) as response:
+                  raw = response.read()
+                  return None if not raw else json.loads(raw)
 
-          devices = get("/v1/devices")
-          transfers = get("/v1/transfers")
+          login = request(
+              "POST",
+              "/v1/auth/login",
+              {
+                  "email": "e2e-primary@pixelgo.local",
+                  "password": "correct-horse-battery-staple-e2e",
+              },
+          )
+          token = login["accessToken"]
+          devices = request("GET", "/v1/devices", token=token)
+          transfers = request("GET", "/v1/transfers", token=token)
 
-          assert len(devices) >= 2, devices
+          assert len(devices) == 2, devices
+          assert len(transfers) >= 1, transfers
           assert any(item["status"] == "completed" for item in transfers), transfers
-          print("PASS: PostgreSQL state survives API restart")
+          print("PASS: authenticated PostgreSQL state survives API restart")
           PY
 
   android:
