@@ -34,6 +34,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import com.armaabetancourtt.pixelgo.model.PixelDevice
+import com.armaabetancourtt.pixelgo.model.ReceivedTextItem
 import com.armaabetancourtt.pixelgo.model.Transfer
 import com.armaabetancourtt.pixelgo.network.ApiClient
 import com.armaabetancourtt.pixelgo.network.RealtimeClient
@@ -76,6 +77,7 @@ private fun PixelGoApp(
     var devices by remember { mutableStateOf<List<PixelDevice>>(emptyList()) }
     var transfers by remember { mutableStateOf<List<Transfer>>(emptyList()) }
     var onlineDeviceIds by remember { mutableStateOf<Set<String>>(emptySet()) }
+    var receivedItems by remember { mutableStateOf<List<ReceivedTextItem>>(emptyList()) }
     var localDeviceId by remember { mutableStateOf<String?>(null) }
 
     suspend fun reload() {
@@ -110,6 +112,7 @@ private fun PixelGoApp(
             devices = emptyList()
             transfers = emptyList()
             onlineDeviceIds = emptySet()
+            receivedItems = emptyList()
             errorMessage = error.message
         } catch (error: Exception) {
             errorMessage = error.message ?: "Could not load PIXEL GO."
@@ -118,12 +121,38 @@ private fun PixelGoApp(
         }
     }
 
+    suspend fun receivePendingItems() {
+        val destinationId = localDeviceId ?: return
+
+        try {
+            val incoming = api.receiveReadyTextItems(destinationId)
+            if (incoming.isEmpty()) return
+
+            val knownIds = receivedItems.map { it.id }.toMutableSet()
+            val uniqueIncoming = incoming.filter { knownIds.add(it.id) }
+            if (uniqueIncoming.isNotEmpty()) {
+                receivedItems = uniqueIncoming + receivedItems
+            }
+        } catch (error: SessionExpiredException) {
+            realtime.disconnect()
+            api.signOut()
+            localDeviceId = null
+            isAuthenticated = false
+            errorMessage = error.message
+        } catch (error: Exception) {
+            errorMessage = error.message ?: "Could not receive pending items."
+        }
+    }
+
     fun connectRealtime(deviceId: String) {
         realtime.connect(
             deviceId = deviceId,
-            onEvent = {
+            onEvent = { eventType ->
                 scope.launch {
                     if (isAuthenticated) {
+                        if (eventType == "transfer.ready") {
+                            receivePendingItems()
+                        }
                         reload()
                     }
                 }
@@ -160,6 +189,11 @@ private fun PixelGoApp(
                 platform = "android"
             )
             localDeviceId = device.id
+
+            // Durable recovery path: process ready transfers even if the
+            // realtime event was missed while Android was suspended.
+            receivePendingItems()
+
             connectRealtime(device.id)
             reload()
         } catch (error: SessionExpiredException) {
@@ -226,10 +260,37 @@ private fun PixelGoApp(
             HomeScreen(
                 devices = devices,
                 transfers = transfers,
+                receivedItems = receivedItems,
+                localDeviceId = localDeviceId,
                 onlineDeviceIds = onlineDeviceIds,
                 errorMessage = errorMessage,
                 isLoading = isLoading,
                 onRefresh = { scope.launch { reload() } },
+                onSendText = { text, destinationId ->
+                    scope.launch {
+                        val sourceId = localDeviceId ?: return@launch
+                        isLoading = true
+                        errorMessage = null
+                        try {
+                            api.sendText(
+                                text = text,
+                                sourceDeviceId = sourceId,
+                                destinationDeviceId = destinationId
+                            )
+                            reload()
+                        } catch (error: SessionExpiredException) {
+                            realtime.disconnect()
+                            api.signOut()
+                            localDeviceId = null
+                            isAuthenticated = false
+                            errorMessage = error.message
+                        } catch (error: Exception) {
+                            errorMessage = error.message ?: "Could not send item."
+                        } finally {
+                            isLoading = false
+                        }
+                    }
+                },
                 onSignOut = {
                     realtime.disconnect()
                     api.signOut()
@@ -238,6 +299,7 @@ private fun PixelGoApp(
                     devices = emptyList()
                     transfers = emptyList()
                     onlineDeviceIds = emptySet()
+                    receivedItems = emptyList()
                     errorMessage = null
                 }
             )
@@ -338,12 +400,26 @@ private fun AuthScreen(
 private fun HomeScreen(
     devices: List<PixelDevice>,
     transfers: List<Transfer>,
+    receivedItems: List<ReceivedTextItem>,
+    localDeviceId: String?,
     onlineDeviceIds: Set<String>,
     errorMessage: String?,
     isLoading: Boolean,
     onRefresh: () -> Unit,
+    onSendText: (String, String) -> Unit,
     onSignOut: () -> Unit
 ) {
+    var showingSend by remember { mutableStateOf(false) }
+    var sendText by remember { mutableStateOf("") }
+    var selectedDestinationId by remember { mutableStateOf("") }
+
+    val destinationDevices = devices.filter { it.id != localDeviceId }
+
+    LaunchedEffect(destinationDevices) {
+        if (destinationDevices.none { it.id == selectedDestinationId }) {
+            selectedDestinationId = destinationDevices.firstOrNull()?.id.orEmpty()
+        }
+    }
     LazyColumn(
         modifier = Modifier
             .fillMaxSize()
@@ -408,7 +484,16 @@ private fun HomeScreen(
                     horizontalArrangement = Arrangement.SpaceBetween
                 ) {
                     Column {
-                        Text(device.name, fontWeight = FontWeight.SemiBold)
+                        Row {
+                            Text(device.name, fontWeight = FontWeight.SemiBold)
+                            if (device.id == localDeviceId) {
+                                Text(
+                                    "  THIS DEVICE",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                        }
                         Text(
                             device.platform.uppercase(),
                             style = MaterialTheme.typography.labelSmall,
@@ -424,6 +509,28 @@ private fun HomeScreen(
                             MaterialTheme.colorScheme.onSurfaceVariant
                         }
                     )
+                }
+            }
+        }
+
+        if (receivedItems.isNotEmpty()) {
+            item {
+                HorizontalDivider()
+                Text("INBOX", style = MaterialTheme.typography.labelLarge)
+            }
+
+            items(receivedItems, key = { it.id }) { item ->
+                Column(
+                    Modifier
+                        .fillMaxWidth()
+                        .padding(vertical = 6.dp)
+                ) {
+                    Text(
+                        if (item.kind == "link") "LINK" else "TEXT",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Text(item.text)
                 }
             }
         }
@@ -450,11 +557,71 @@ private fun HomeScreen(
             }
         }
 
+        if (showingSend) {
+            item {
+                HorizontalDivider()
+                Text("SEND TEXT OR LINK", style = MaterialTheme.typography.labelLarge)
+
+                destinationDevices.forEach { device ->
+                    TextButton(
+                        onClick = { selectedDestinationId = device.id },
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text(
+                            if (selectedDestinationId == device.id) {
+                                "✓ " + device.name
+                            } else {
+                                device.name
+                            }
+                        )
+                    }
+                }
+
+                OutlinedTextField(
+                    value = sendText,
+                    onValueChange = { sendText = it },
+                    modifier = Modifier.fillMaxWidth(),
+                    label = { Text("Text or URL") },
+                    minLines = 3,
+                    enabled = !isLoading
+                )
+
+                Spacer(Modifier.height(10.dp))
+
+                Button(
+                    onClick = {
+                        onSendText(sendText, selectedDestinationId)
+                        sendText = ""
+                        showingSend = false
+                    },
+                    modifier = Modifier.fillMaxWidth(),
+                    enabled = sendText.isNotBlank() &&
+                        selectedDestinationId.isNotBlank() &&
+                        !isLoading
+                ) {
+                    Text("SEND")
+                }
+            }
+        }
+
         item {
             Spacer(Modifier.height(16.dp))
-            Button(onClick = {}, modifier = Modifier.fillMaxWidth()) {
-                Text("+   SEND")
+            Button(
+                onClick = { showingSend = !showingSend },
+                modifier = Modifier.fillMaxWidth(),
+                enabled = destinationDevices.isNotEmpty() && !isLoading
+            ) {
+                Text(if (showingSend) "CANCEL" else "+   SEND")
             }
+
+            if (destinationDevices.isEmpty()) {
+                Text(
+                    "Sign in on another device to start sending.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+
             Spacer(Modifier.height(28.dp))
         }
     }
