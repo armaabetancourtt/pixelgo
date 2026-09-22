@@ -111,10 +111,11 @@ jobs:
             -e MINIO_ROOT_PASSWORD=pixelgo-ci-secret \
             quay.io/minio/minio server /data
 
-          for i in {1..30}; do
+          for attempt in {1..30}; do
             if curl --fail --silent http://127.0.0.1:9000/minio/health/live >/dev/null; then
               exit 0
             fi
+            echo "waiting for MinIO (${attempt}/30)"
             sleep 1
           done
 
@@ -141,10 +142,11 @@ jobs:
           start_api() {
             /tmp/pixelgo-api > /tmp/pixelgo-api.log 2>&1 &
             API_PID=$!
-            for i in {1..30}; do
+            for attempt in {1..30}; do
               if curl --fail --silent http://127.0.0.1:8080/health >/dev/null; then
                 return 0
               fi
+              echo "waiting for API (${attempt}/30)"
               sleep 1
             done
             cat /tmp/pixelgo-api.log
