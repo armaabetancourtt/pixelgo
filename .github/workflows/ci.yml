@@ -175,7 +175,7 @@ jobs:
       - name: Build and test
         working-directory: ios
         run: |
-          xcodebuild             -project PixelGo.xcodeproj             -scheme PixelGo             -sdk iphonesimulator             -destination 'platform=macOS,arch=arm64,variant=Designed for [iPad,iPhone]'             CODE_SIGNING_ALLOWED=NO             test
+          xcodebuild             -project PixelGo.xcodeproj             -scheme PixelGo             -destination 'platform=macOS,arch=arm64'             CODE_SIGNING_ALLOWED=NO             test
 
   docker:
     name: Backend container
