@@ -109,6 +109,20 @@ actor APIClient {
         return device
     }
 
+    func updatePushToken(
+        _ token: String,
+        deviceID: String
+    ) async throws -> PixelDevice {
+        var request = URLRequest(
+            url: baseURL.appending(path: "/v1/devices/\(deviceID)/push-token")
+        )
+        request.httpMethod = "PUT"
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try encoder.encode(PushTokenRequest(pushToken: token))
+        return try await performAuthenticated(request, retryAfterRefresh: true)
+    }
+
     func sendText(
         _ text: String,
         sourceDeviceID: String,
