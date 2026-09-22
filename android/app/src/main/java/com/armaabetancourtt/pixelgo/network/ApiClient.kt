@@ -82,6 +82,25 @@ class ApiClient(
         return device
     }
 
+    suspend fun updatePushToken(
+        deviceId: String,
+        token: String
+    ): PixelDevice {
+        val response = authenticatedRequest(
+            method = "PUT",
+            path = "/v1/devices/" + deviceId + "/push-token",
+            body = JSONObject()
+                .put("pushToken", token)
+                .toString()
+        )
+        val item = JSONObject(response)
+        return PixelDevice(
+            id = item.getString("id"),
+            name = item.getString("name"),
+            platform = item.getString("platform")
+        )
+    }
+
     suspend fun sendText(
         text: String,
         sourceDeviceId: String,
