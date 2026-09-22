@@ -134,3 +134,52 @@ func TestRetryBackoffCapsAtFiveMinutes(t *testing.T) {
 		t.Fatalf("expected 5m cap, got %s", got)
 	}
 }
+
+
+type fakePresence struct {
+	online bool
+	err    error
+}
+
+func (p fakePresence) IsOnline(context.Context, string) (bool, error) {
+	return p.online, p.err
+}
+
+type countingSender struct {
+	calls int
+}
+
+func (s *countingSender) Send(context.Context, Delivery) error {
+	s.calls++
+	return nil
+}
+
+func TestOfflineOnlySenderSkipsPushWhenDeviceIsOnline(t *testing.T) {
+	next := &countingSender{}
+	sender := OfflineOnlySender{
+		Presence: fakePresence{online: true},
+		Next:     next,
+	}
+
+	if err := sender.Send(context.Background(), Delivery{DeviceID: "dev_1"}); err != nil {
+		t.Fatal(err)
+	}
+	if next.calls != 0 {
+		t.Fatalf("expected realtime-online device to skip push, got %d calls", next.calls)
+	}
+}
+
+func TestOfflineOnlySenderFallsBackToPushWhenPresenceIsUnknown(t *testing.T) {
+	next := &countingSender{}
+	sender := OfflineOnlySender{
+		Presence: fakePresence{err: errors.New("redis unavailable")},
+		Next:     next,
+	}
+
+	if err := sender.Send(context.Background(), Delivery{DeviceID: "dev_1"}); err != nil {
+		t.Fatal(err)
+	}
+	if next.calls != 1 {
+		t.Fatalf("expected push fallback, got %d calls", next.calls)
+	}
+}
