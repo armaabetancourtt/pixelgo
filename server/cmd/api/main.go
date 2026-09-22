@@ -92,7 +92,31 @@ func main() {
 	hub := realtime.NewHub(hubOptions...)
 	hub.Start(context.Background())
 
-	fileService := files.NewService(baseURL, signingSecret, 10*time.Minute)
+	var fileService *files.Service
+	if storageEndpoint := os.Getenv("OBJECT_STORAGE_ENDPOINT"); storageEndpoint != "" {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+
+		storage, err := files.NewS3Service(ctx, files.S3Config{
+			Endpoint:   storageEndpoint,
+			Bucket:     env("OBJECT_STORAGE_BUCKET", "pixelgo"),
+			AccessKey:  os.Getenv("OBJECT_STORAGE_ACCESS_KEY"),
+			SecretKey:  os.Getenv("OBJECT_STORAGE_SECRET_KEY"),
+			Region:     env("OBJECT_STORAGE_REGION", "us-east-1"),
+			Prefix:     env("OBJECT_STORAGE_PREFIX", "transfers"),
+			TTL:        10 * time.Minute,
+			AutoCreate: envBool("OBJECT_STORAGE_AUTO_CREATE", false),
+		})
+		if err != nil {
+			log.Fatal(err)
+		}
+		fileService = storage
+		log.Printf("pixelgo payload storage: s3-compatible")
+	} else {
+		fileService = files.NewService(baseURL, signingSecret, 10*time.Minute)
+		log.Printf("pixelgo payload storage: in-memory development adapter")
+	}
+
 	authService := auth.NewService(authRepo, []byte(jwtSecret))
 	deviceService := devices.NewService(deviceRepo)
 	transferService := transfers.NewService(transferRepo, hub, fileService)
