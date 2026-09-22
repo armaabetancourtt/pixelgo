@@ -416,9 +416,10 @@ El E2E corre con auth obligatorio, PostgreSQL, Redis y MinIO reales, y prueba:
 - métricas Prometheus/OpenMetrics con labels de cardinalidad acotada;
 - retries cross-replica;
 - E2E autenticado;
-- CI multiplataforma;
-- Docker;
-- release artifacts;
+- CI multiplataforma + lint de workflows;
+- imagen backend en GHCR con SBOM/provenance;
+- promoción opcional staging → readiness → production;
+- artifacts release Android/iOS;
 - docs EN/ES.
 
 ### Pendiente explícitamente
