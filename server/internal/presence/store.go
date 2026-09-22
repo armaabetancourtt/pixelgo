@@ -3,6 +3,7 @@ package presence
 import (
 	"context"
 	"errors"
+	"strconv"
 	"sync"
 	"time"
 
@@ -28,11 +29,12 @@ func (s *MemoryStore) Touch(_ context.Context, deviceID, leaseID string, ttl tim
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	s.pruneLocked(time.Now())
+	now := time.Now()
+	s.pruneLocked(now)
 	if s.leases[deviceID] == nil {
 		s.leases[deviceID] = make(map[string]time.Time)
 	}
-	s.leases[deviceID][leaseID] = time.Now().Add(ttl)
+	s.leases[deviceID][leaseID] = now.Add(ttl)
 	return nil
 }
 
@@ -102,8 +104,11 @@ func (s *RedisStore) Touch(ctx context.Context, deviceID, leaseID string, ttl ti
 	key := s.key(deviceID)
 
 	pipe := s.client.TxPipeline()
-	pipe.ZRemRangeByScore(ctx, key, "-inf", formatScore(now))
-	pipe.ZAdd(ctx, key, redis.Z{Score: float64(expiry.UnixMilli()), Member: leaseID})
+	pipe.ZRemRangeByScore(ctx, key, "-inf", score(now))
+	pipe.ZAdd(ctx, key, redis.Z{
+		Score:  float64(expiry.UnixMilli()),
+		Member: leaseID,
+	})
 	pipe.Expire(ctx, key, ttl*2)
 	_, err := pipe.Exec(ctx)
 	return err
@@ -125,7 +130,7 @@ func (s *RedisStore) Online(ctx context.Context, deviceIDs []string) (map[string
 
 	for _, deviceID := range deviceIDs {
 		key := s.key(deviceID)
-		pipe.ZRemRangeByScore(ctx, key, "-inf", formatScore(now))
+		pipe.ZRemRangeByScore(ctx, key, "-inf", score(now))
 		counts[deviceID] = pipe.ZCard(ctx, key)
 	}
 
@@ -147,6 +152,6 @@ func (s *RedisStore) key(deviceID string) string {
 	return s.prefix + deviceID
 }
 
-func formatScore(t time.Time) string {
-	return time.UnixMilli(t.UnixMilli()).Format("20060102150405.000")
+func score(t time.Time) string {
+	return strconv.FormatInt(t.UnixMilli(), 10)
 }
