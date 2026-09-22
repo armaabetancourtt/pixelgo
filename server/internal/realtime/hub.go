@@ -78,10 +78,6 @@ func (h *Hub) Publish(eventType string, payload any) {
 
 func (h *Hub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	deviceID := strings.TrimSpace(r.URL.Query().Get("deviceId"))
-	if deviceID == "" {
-		http.Error(w, "deviceId is required", http.StatusBadRequest)
-		return
-	}
 
 	conn, err := websocket.Accept(
 		w,
@@ -92,34 +88,37 @@ func (h *Hub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	leaseID, err := newLeaseID()
-	if err != nil {
-		_ = conn.Close(websocket.StatusInternalError, "presence lease failed")
-		return
-	}
-
 	ctx, cancel := context.WithCancel(r.Context())
 	defer cancel()
 
-	wasOnline := h.isOnline(ctx, deviceID)
-	if err := h.presence.Touch(ctx, deviceID, leaseID, presenceTTL); err != nil {
-		_ = conn.Close(websocket.StatusInternalError, "presence unavailable")
-		return
+	state := client{
+		deviceID: deviceID,
+		writeMu:  &sync.Mutex{},
+	}
+
+	if deviceID != "" {
+		leaseID, err := newLeaseID()
+		if err != nil {
+			_ = conn.Close(websocket.StatusInternalError, "presence lease failed")
+			return
+		}
+		state.leaseID = leaseID
+
+		wasOnline := h.isOnline(ctx, deviceID)
+		if err := h.presence.Touch(ctx, deviceID, leaseID, presenceTTL); err != nil {
+			_ = conn.Close(websocket.StatusInternalError, "presence unavailable")
+			return
+		}
+		if !wasOnline {
+			h.Publish("device.online", map[string]string{"deviceId": deviceID})
+		}
+
+		go h.heartbeat(ctx, deviceID, leaseID)
 	}
 
 	h.mu.Lock()
-	h.clients[conn] = client{
-		deviceID: deviceID,
-		leaseID:  leaseID,
-		writeMu:  &sync.Mutex{},
-	}
+	h.clients[conn] = state
 	h.mu.Unlock()
-
-	if !wasOnline {
-		h.Publish("device.online", map[string]string{"deviceId": deviceID})
-	}
-
-	go h.heartbeat(ctx, deviceID, leaseID)
 
 	defer func() {
 		cancel()
@@ -128,12 +127,14 @@ func (h *Hub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		delete(h.clients, conn)
 		h.mu.Unlock()
 
-		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), presenceTimeout)
-		defer cleanupCancel()
+		if state.deviceID != "" && state.leaseID != "" {
+			cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), presenceTimeout)
+			defer cleanupCancel()
 
-		_ = h.presence.Remove(cleanupCtx, deviceID, leaseID)
-		if !h.isOnline(cleanupCtx, deviceID) {
-			h.Publish("device.offline", map[string]string{"deviceId": deviceID})
+			_ = h.presence.Remove(cleanupCtx, state.deviceID, state.leaseID)
+			if !h.isOnline(cleanupCtx, state.deviceID) {
+				h.Publish("device.offline", map[string]string{"deviceId": state.deviceID})
+			}
 		}
 
 		_ = conn.Close(websocket.StatusNormalClosure, "bye")
