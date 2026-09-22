@@ -5,8 +5,6 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
-	"sort"
-	"sync"
 	"time"
 )
 
@@ -26,43 +24,55 @@ type RegisterInput struct {
 	PushToken string `json:"pushToken"`
 }
 
-type Service struct {
-	mu    sync.RWMutex
-	items map[string]Device
+type Repository interface {
+	Create(context.Context, Device) (Device, error)
+	List(context.Context) ([]Device, error)
+	Delete(context.Context, string) error
 }
 
-func NewService() *Service { return &Service{items: map[string]Device{}} }
+type Service struct {
+	repo Repository
+}
 
-func (s *Service) Register(_ context.Context, in RegisterInput) (Device, error) {
+func NewService(repositories ...Repository) *Service {
+	var repo Repository = NewMemoryRepository()
+	if len(repositories) > 0 && repositories[0] != nil {
+		repo = repositories[0]
+	}
+	return &Service{repo: repo}
+}
+
+func (s *Service) Register(ctx context.Context, in RegisterInput) (Device, error) {
 	if in.Name == "" || (in.Platform != "ios" && in.Platform != "android") {
 		return Device{}, errors.New("invalid device")
 	}
-	var b [10]byte
-	if _, err := rand.Read(b[:]); err != nil { return Device{}, err }
-	d := Device{
-		ID: "dev_" + hex.EncodeToString(b[:]),
-		Name: in.Name, Platform: in.Platform, PushToken: in.PushToken,
-		CreatedAt: time.Now().UTC(),
+
+	id, err := newID()
+	if err != nil {
+		return Device{}, err
 	}
-	s.mu.Lock()
-	s.items[d.ID] = d
-	s.mu.Unlock()
-	return d, nil
+
+	return s.repo.Create(ctx, Device{
+		ID:        id,
+		Name:      in.Name,
+		Platform:  in.Platform,
+		PushToken: in.PushToken,
+		CreatedAt: time.Now().UTC(),
+	})
 }
 
-func (s *Service) List(_ context.Context) []Device {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	out := make([]Device, 0, len(s.items))
-	for _, d := range s.items { out = append(out, d) }
-	sort.Slice(out, func(i, j int) bool { return out[i].CreatedAt.Before(out[j].CreatedAt) })
-	return out
+func (s *Service) List(ctx context.Context) ([]Device, error) {
+	return s.repo.List(ctx)
 }
 
-func (s *Service) Delete(_ context.Context, id string) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if _, ok := s.items[id]; !ok { return ErrNotFound }
-	delete(s.items, id)
-	return nil
+func (s *Service) Delete(ctx context.Context, id string) error {
+	return s.repo.Delete(ctx, id)
+}
+
+func newID() (string, error) {
+	var b [10]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return "", err
+	}
+	return "dev_" + hex.EncodeToString(b[:]), nil
 }
