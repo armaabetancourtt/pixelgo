@@ -254,7 +254,7 @@ disconnect / TTL expiry
             offline
 ```
 
-Redis Pub/Sub lets a transfer event produced by one API replica reach WebSocket clients connected to another replica.
+Redis Pub/Sub lets a transfer event produced by one API replica reach the correct WebSocket client on another replica. Routing is explicit: transfer events target the relevant source/destination device, presence is scoped to the authenticated account, and realtime payloads never expose presigned storage capabilities.
 
 ## Rate limiting
 
