@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/redis/go-redis/v9"
@@ -32,7 +33,7 @@ type redisIdempotencyLock struct {
 func withRedisIdempotency(next http.Handler, client *redis.Client, ttl time.Duration) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		key := r.Header.Get("Idempotency-Key")
-		if key == "" || r.Method != http.MethodPost {
+		if key == "" || r.Method != http.MethodPost || strings.HasPrefix(r.URL.Path, "/v1/auth/") {
 			next.ServeHTTP(w, r)
 			return
 		}
@@ -46,11 +47,12 @@ func withRedisIdempotency(next http.Handler, client *redis.Client, ttl time.Dura
 			return
 		}
 		fingerprint := requestFingerprint(r, body)
+		storageKey := scopedIdempotencyKey(r, key)
 
 		record, replayed, conflict, leader, err := acquireRedisIdempotency(
 			r.Context(),
 			client,
-			key,
+			storageKey,
 			fingerprint,
 			ttl,
 		)
@@ -81,9 +83,9 @@ func withRedisIdempotency(next http.Handler, client *redis.Client, ttl time.Dura
 		}
 
 		if recorder.status >= http.StatusInternalServerError {
-			_ = releaseRedisIdempotency(r.Context(), client, key, leader)
+			_ = releaseRedisIdempotency(r.Context(), client, storageKey, leader)
 		} else {
-			_ = commitRedisIdempotency(r.Context(), client, key, leader, result, ttl)
+			_ = commitRedisIdempotency(r.Context(), client, storageKey, leader, result, ttl)
 		}
 
 		writeStoredResponse(w, result, false)
