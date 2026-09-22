@@ -275,6 +275,49 @@ actor APIClient {
         return data
     }
 
+    func downloadPayloadFile(for transfer: Transfer) async throws -> URL {
+        guard let downloadURL = transfer.downloadUrl else {
+            throw APIError.invalidResponse
+        }
+
+        let (temporaryLocation, response) = try await session.download(
+            from: downloadURL
+        )
+        guard
+            let http = response as? HTTPURLResponse,
+            (200..<300).contains(http.statusCode)
+        else {
+            throw APIError.invalidResponse
+        }
+
+        let ext = transfer.displayName
+            .flatMap { URL(fileURLWithPath: $0).pathExtension }
+        let fileName = ext?.isEmpty == false
+            ? "pixelgo-\(UUID().uuidString).\(ext!)"
+            : "pixelgo-\(UUID().uuidString)"
+        let ownedURL = FileManager.default.temporaryDirectory
+            .appending(path: fileName)
+
+        do {
+            try FileManager.default.moveItem(
+                at: temporaryLocation,
+                to: ownedURL
+            )
+
+            let metadata = try await Self.inspectFile(ownedURL)
+            guard
+                metadata.sizeBytes == transfer.sizeBytes,
+                metadata.sha256.caseInsensitiveCompare(transfer.sha256) == .orderedSame
+            else {
+                throw APIError.checksumMismatch
+            }
+            return ownedURL
+        } catch {
+            try? FileManager.default.removeItem(at: ownedURL)
+            throw error
+        }
+    }
+
     func completeTransfer(_ transferID: String) async throws -> Transfer {
         try await authenticatedMutation(
             "/v1/transfers/\(transferID)/complete",
