@@ -154,7 +154,7 @@ complete
 Delivered ✓
 ~~~
 
-El adapter local mantiene payload bytes en memoria para desarrollo/CI. La frontera está separada para reemplazarlo por S3/MinIO sin cambiar el dominio.
+Cuando `OBJECT_STORAGE_ENDPOINT` está configurado, los bytes no pasan por el API Go: iOS y Android hacen PUT/GET directo contra storage S3-compatible mediante URLs presignadas. El PUT exige `X-Amz-Meta-Sha256` dentro de la firma; antes de pasar a `ready`, el API hace `HEAD` al objeto y valida tamaño exacto + checksum metadata. CI ejecuta este flujo contra MinIO real. El adapter HMAC in-memory queda sólo como fallback local/aislado.
 
 ## Idempotencia distribuida
 
@@ -181,8 +181,10 @@ flowchart LR
     A <--> |WebSocket| RT
     API --> PG[(PostgreSQL)]
     API --> R[(Redis)]
-    API --> FS[Signed File Boundary]
-    FS --> O[(S3 / MinIO production adapter)]
+    API --> FS[Presigned Object Boundary]
+    I -->|PUT / GET directo| O[(S3 / MinIO)]
+    A -->|PUT / GET directo| O
+    FS --> O
     API --> W[Workers]
     W --> P[APNs / FCM]
     RT <--> R
@@ -207,6 +209,14 @@ flowchart LR
 - Pub/Sub realtime;
 - locks/resultados de idempotencia;
 - rate limits compartidos.
+
+**Object storage**
+
+- presigned PUT/GET S3-compatible;
+- bytes directos entre clientes mobile y MinIO/S3;
+- el PUT firma `X-Amz-Meta-Sha256`;
+- el API verifica tamaño + checksum por `HEAD` antes de `transfer.ready`;
+- fallback in-memory sólo si object storage no está configurado.
 
 Las signed URLs se regeneran y no se persisten como credenciales durables.
 
@@ -300,25 +310,25 @@ Implementado:
         ┌────────────────────┼────────────────────┐
         ↓                    ↓                    ↓
     iOS build           Android build       Go vet + race
-    Swift tests         JUnit               Postgres + Redis
+    Swift tests         JUnit          Postgres + Redis + MinIO
         │                    │                    ↓
         │                    │          authenticated E2E
         └────────────────────┴────────────── Docker build
 ~~~
 
-El E2E corre con auth obligatorio y prueba:
+El E2E corre con auth obligatorio, PostgreSQL, Redis y MinIO reales, y prueba:
 
 1. creación de cuenta;
 2. rechazo sin Bearer;
 3. iPhone + Android scoped a la cuenta;
 4. transfer idempotente;
-5. bytes reales upload/download;
-6. SHA-256;
+5. presigned PUT directo a MinIO con SHA-256 metadata firmada;
+6. HEAD server-side + validación SHA-256 del download;
 7. completed;
 8. otra cuenta no ve los recursos;
 9. refresh rotation;
 10. reuse del refresh viejo revoca la familia;
-11. el estado autenticado sobrevive restart del API.
+11. metadata autenticada sobrevive restart del API y los bytes permanecen en MinIO.
 
 ## Estado actual
 
@@ -335,8 +345,10 @@ El E2E corre con auth obligatorio y prueba:
 - PostgreSQL;
 - Redis presence/PubSub/idempotency/rate limiting;
 - WebSockets;
-- signed binary local adapter;
-- size + SHA-256;
+- presigned PUT/GET directo S3/MinIO;
+- checksum metadata firmada + HEAD verification;
+- size + SHA-256 en destino;
+- fallback signed in-memory local;
 - retries cross-replica;
 - E2E autenticado;
 - CI multiplataforma;
@@ -346,9 +358,9 @@ El E2E corre con auth obligatorio y prueba:
 
 ### Pendiente explícitamente
 
-- adapter productivo S3/MinIO;
+- lifecycle/retention de objetos, quotas y hardening de bucket policy;
 - APNs / FCM reales;
-- UX completa de SEND + picker/upload;
+- UX completa de SEND para archivos/fotos + background upload;
 - auto-download en background;
 - E2EE de contenido;
 - E2E físico iPhone → Android;
