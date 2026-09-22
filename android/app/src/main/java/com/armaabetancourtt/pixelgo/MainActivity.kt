@@ -1,5 +1,6 @@
 package com.armaabetancourtt.pixelgo
 
+import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -35,8 +36,10 @@ import androidx.compose.ui.unit.dp
 import com.armaabetancourtt.pixelgo.model.PixelDevice
 import com.armaabetancourtt.pixelgo.model.Transfer
 import com.armaabetancourtt.pixelgo.network.ApiClient
+import com.armaabetancourtt.pixelgo.network.RealtimeClient
 import com.armaabetancourtt.pixelgo.network.SessionExpiredException
 import com.armaabetancourtt.pixelgo.security.SessionStore
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlin.math.roundToInt
 
@@ -46,11 +49,12 @@ class MainActivity : ComponentActivity() {
 
         val sessionStore = SessionStore(applicationContext)
         val api = ApiClient(BuildConfig.API_BASE_URL, sessionStore)
+        val realtime = RealtimeClient(BuildConfig.API_BASE_URL, sessionStore)
 
         setContent {
             MaterialTheme {
                 Surface(modifier = Modifier.fillMaxSize()) {
-                    PixelGoApp(api)
+                    PixelGoApp(api, realtime)
                 }
             }
         }
@@ -58,7 +62,10 @@ class MainActivity : ComponentActivity() {
 }
 
 @Composable
-private fun PixelGoApp(api: ApiClient) {
+private fun PixelGoApp(
+    api: ApiClient,
+    realtime: RealtimeClient
+) {
     val scope = rememberCoroutineScope()
 
     var didBootstrap by remember { mutableStateOf(false) }
@@ -69,6 +76,7 @@ private fun PixelGoApp(api: ApiClient) {
     var devices by remember { mutableStateOf<List<PixelDevice>>(emptyList()) }
     var transfers by remember { mutableStateOf<List<Transfer>>(emptyList()) }
     var onlineDeviceIds by remember { mutableStateOf<Set<String>>(emptySet()) }
+    var localDeviceId by remember { mutableStateOf<String?>(null) }
 
     suspend fun reload() {
         if (!isAuthenticated) return
@@ -95,7 +103,9 @@ private fun PixelGoApp(api: ApiClient) {
             onlineDeviceIds = online
             errorMessage = null
         } catch (error: SessionExpiredException) {
+            realtime.disconnect()
             api.signOut()
+            localDeviceId = null
             isAuthenticated = false
             devices = emptyList()
             transfers = emptyList()
@@ -108,11 +118,68 @@ private fun PixelGoApp(api: ApiClient) {
         }
     }
 
+    fun connectRealtime(deviceId: String) {
+        realtime.connect(
+            deviceId = deviceId,
+            onEvent = {
+                scope.launch {
+                    if (isAuthenticated) {
+                        reload()
+                    }
+                }
+            },
+            onDisconnected = {
+                scope.launch {
+                    delay(1_000)
+                    if (!isAuthenticated || localDeviceId != deviceId) {
+                        return@launch
+                    }
+
+                    // An authenticated REST call performs single-flight token
+                    // refresh if the WebSocket failed after access expiry.
+                    runCatching { api.listDevices() }
+
+                    if (isAuthenticated && localDeviceId == deviceId) {
+                        connectRealtime(deviceId)
+                    }
+                }
+            }
+        )
+    }
+
+    suspend fun prepareAuthenticatedSession() {
+        isLoading = true
+        try {
+            val deviceName = listOf(Build.MANUFACTURER, Build.MODEL)
+                .filter { it.isNotBlank() }
+                .joinToString(" ")
+                .ifBlank { "Android device" }
+
+            val device = api.ensureCurrentDevice(
+                name = deviceName,
+                platform = "android"
+            )
+            localDeviceId = device.id
+            connectRealtime(device.id)
+            reload()
+        } catch (error: SessionExpiredException) {
+            realtime.disconnect()
+            api.signOut()
+            localDeviceId = null
+            isAuthenticated = false
+            errorMessage = error.message
+            isLoading = false
+        } catch (error: Exception) {
+            errorMessage = error.message ?: "Could not prepare this device."
+            isLoading = false
+        }
+    }
+
     LaunchedEffect(Unit) {
         isAuthenticated = api.hasStoredSession()
         didBootstrap = true
         if (isAuthenticated) {
-            reload()
+            prepareAuthenticatedSession()
         }
     }
 
@@ -145,7 +212,7 @@ private fun PixelGoApp(api: ApiClient) {
                                 api.login(email, password)
                             }
                             isAuthenticated = true
-                            reload()
+                            prepareAuthenticatedSession()
                         } catch (error: Exception) {
                             errorMessage = error.message ?: "Authentication failed."
                             isLoading = false
@@ -164,7 +231,9 @@ private fun PixelGoApp(api: ApiClient) {
                 isLoading = isLoading,
                 onRefresh = { scope.launch { reload() } },
                 onSignOut = {
+                    realtime.disconnect()
                     api.signOut()
+                    localDeviceId = null
                     isAuthenticated = false
                     devices = emptyList()
                     transfers = emptyList()
