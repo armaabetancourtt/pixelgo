@@ -14,6 +14,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.Button
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
@@ -28,7 +29,6 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
@@ -36,18 +36,21 @@ import com.armaabetancourtt.pixelgo.model.PixelDevice
 import com.armaabetancourtt.pixelgo.model.Transfer
 import com.armaabetancourtt.pixelgo.network.ApiClient
 import com.armaabetancourtt.pixelgo.network.SessionExpiredException
-import com.armaabetancourtt.pixelgo.network.SessionRequiredException
-import com.armaabetancourtt.pixelgo.security.SecureTokenStore
+import com.armaabetancourtt.pixelgo.security.SessionStore
 import kotlinx.coroutines.launch
 import kotlin.math.roundToInt
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+
+        val sessionStore = SessionStore(applicationContext)
+        val api = ApiClient(BuildConfig.API_BASE_URL, sessionStore)
+
         setContent {
             MaterialTheme {
                 Surface(modifier = Modifier.fillMaxSize()) {
-                    PixelGoRoot()
+                    PixelGoApp(api)
                 }
             }
         }
@@ -55,43 +58,133 @@ class MainActivity : ComponentActivity() {
 }
 
 @Composable
-private fun PixelGoRoot() {
-    val context = LocalContext.current.applicationContext
-    val tokenStore = remember { SecureTokenStore(context) }
-    val api = remember { ApiClient(BuildConfig.API_BASE_URL, tokenStore) }
-    var authenticated by remember { mutableStateOf(api.hasStoredSession()) }
+private fun PixelGoApp(api: ApiClient) {
+    val scope = rememberCoroutineScope()
 
-    if (authenticated) {
-        PixelGoHome(
-            api = api,
-            onSignOut = {
-                api.signOut()
-                authenticated = false
-            },
-            onSessionExpired = {
-                api.signOut()
-                authenticated = false
+    var didBootstrap by remember { mutableStateOf(false) }
+    var isAuthenticated by remember { mutableStateOf(false) }
+    var isLoading by remember { mutableStateOf(false) }
+    var errorMessage by remember { mutableStateOf<String?>(null) }
+
+    var devices by remember { mutableStateOf<List<PixelDevice>>(emptyList()) }
+    var transfers by remember { mutableStateOf<List<Transfer>>(emptyList()) }
+    var onlineDeviceIds by remember { mutableStateOf<Set<String>>(emptySet()) }
+
+    suspend fun reload() {
+        if (!isAuthenticated) return
+
+        isLoading = true
+        try {
+            api.health()
+
+            val loadedDevices = api.listDevices()
+            devices = loadedDevices
+            transfers = api.listTransfers()
+
+            val online = mutableSetOf<String>()
+            for (device in loadedDevices) {
+                try {
+                    if (api.isDeviceOnline(device.id)) {
+                        online += device.id
+                    }
+                } catch (_: Exception) {
+                    // Presence is ephemeral. A temporary lookup failure should
+                    // not hide the durable device list.
+                }
             }
-        )
-    } else {
-        AuthScreen(
-            api = api,
-            onAuthenticated = { authenticated = true }
-        )
+            onlineDeviceIds = online
+            errorMessage = null
+        } catch (error: SessionExpiredException) {
+            api.signOut()
+            isAuthenticated = false
+            devices = emptyList()
+            transfers = emptyList()
+            onlineDeviceIds = emptySet()
+            errorMessage = error.message
+        } catch (error: Exception) {
+            errorMessage = error.message ?: "Could not load PIXEL GO."
+        } finally {
+            isLoading = false
+        }
+    }
+
+    LaunchedEffect(Unit) {
+        isAuthenticated = api.hasStoredSession()
+        didBootstrap = true
+        if (isAuthenticated) {
+            reload()
+        }
+    }
+
+    when {
+        !didBootstrap -> {
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(28.dp),
+                verticalArrangement = Arrangement.Center
+            ) {
+                CircularProgressIndicator()
+                Spacer(Modifier.height(16.dp))
+                Text("Opening PIXEL GO…")
+            }
+        }
+
+        !isAuthenticated -> {
+            AuthScreen(
+                isLoading = isLoading,
+                errorMessage = errorMessage,
+                onSubmit = { email, password, createAccount ->
+                    scope.launch {
+                        isLoading = true
+                        errorMessage = null
+                        try {
+                            if (createAccount) {
+                                api.register(email, password)
+                            } else {
+                                api.login(email, password)
+                            }
+                            isAuthenticated = true
+                            reload()
+                        } catch (error: Exception) {
+                            errorMessage = error.message ?: "Authentication failed."
+                            isLoading = false
+                        }
+                    }
+                }
+            )
+        }
+
+        else -> {
+            HomeScreen(
+                devices = devices,
+                transfers = transfers,
+                onlineDeviceIds = onlineDeviceIds,
+                errorMessage = errorMessage,
+                isLoading = isLoading,
+                onRefresh = { scope.launch { reload() } },
+                onSignOut = {
+                    api.signOut()
+                    isAuthenticated = false
+                    devices = emptyList()
+                    transfers = emptyList()
+                    onlineDeviceIds = emptySet()
+                    errorMessage = null
+                }
+            )
+        }
     }
 }
 
 @Composable
 private fun AuthScreen(
-    api: ApiClient,
-    onAuthenticated: () -> Unit
+    isLoading: Boolean,
+    errorMessage: String?,
+    onSubmit: (email: String, password: String, createAccount: Boolean) -> Unit
 ) {
-    val scope = rememberCoroutineScope()
     var email by remember { mutableStateOf("") }
     var password by remember { mutableStateOf("") }
     var createAccount by remember { mutableStateOf(false) }
-    var loading by remember { mutableStateOf(false) }
-    var error by remember { mutableStateOf<String?>(null) }
 
     Column(
         modifier = Modifier
@@ -106,17 +199,19 @@ private fun AuthScreen(
         )
         Text(
             "Your devices. One private transfer space.",
+            style = MaterialTheme.typography.titleMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
 
-        Spacer(Modifier.height(24.dp))
+        Spacer(Modifier.height(28.dp))
 
         OutlinedTextField(
             value = email,
             onValueChange = { email = it },
+            modifier = Modifier.fillMaxWidth(),
             label = { Text("Email") },
             singleLine = true,
-            modifier = Modifier.fillMaxWidth()
+            enabled = !isLoading
         )
 
         Spacer(Modifier.height(12.dp))
@@ -124,55 +219,31 @@ private fun AuthScreen(
         OutlinedTextField(
             value = password,
             onValueChange = { password = it },
+            modifier = Modifier.fillMaxWidth(),
             label = { Text("Password") },
             singleLine = true,
-            visualTransformation = PasswordVisualTransformation(),
-            modifier = Modifier.fillMaxWidth()
+            enabled = !isLoading,
+            visualTransformation = PasswordVisualTransformation()
         )
 
         Spacer(Modifier.height(18.dp))
 
         Button(
-            onClick = {
-                scope.launch {
-                    loading = true
-                    error = null
-
-                    runCatching {
-                        if (createAccount) {
-                            api.register(email, password)
-                        } else {
-                            api.login(email, password)
-                        }
-                    }.fold(
-                        onSuccess = { onAuthenticated() },
-                        onFailure = {
-                            error = it.message ?: "Authentication failed."
-                        }
-                    )
-                    loading = false
-                }
-            },
-            enabled = email.isNotBlank() &&
-                password.isNotBlank() &&
-                !loading,
-            modifier = Modifier.fillMaxWidth()
+            onClick = { onSubmit(email.trim(), password, createAccount) },
+            modifier = Modifier.fillMaxWidth(),
+            enabled = email.isNotBlank() && password.isNotBlank() && !isLoading
         ) {
-            Text(
-                when {
-                    loading -> "CONNECTING…"
-                    createAccount -> "CREATE ACCOUNT"
-                    else -> "SIGN IN"
-                }
-            )
+            if (isLoading) {
+                CircularProgressIndicator()
+            } else {
+                Text(if (createAccount) "CREATE ACCOUNT" else "SIGN IN")
+            }
         }
 
         TextButton(
-            onClick = {
-                createAccount = !createAccount
-                error = null
-            },
-            modifier = Modifier.fillMaxWidth()
+            onClick = { createAccount = !createAccount },
+            modifier = Modifier.fillMaxWidth(),
+            enabled = !isLoading
         ) {
             Text(
                 if (createAccount) {
@@ -183,58 +254,27 @@ private fun AuthScreen(
             )
         }
 
-        error?.let {
+        if (errorMessage != null) {
             Spacer(Modifier.height(8.dp))
             Text(
-                it,
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
+                errorMessage,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                style = MaterialTheme.typography.bodySmall
             )
         }
     }
 }
 
 @Composable
-private fun PixelGoHome(
-    api: ApiClient,
-    onSignOut: () -> Unit,
-    onSessionExpired: () -> Unit
+private fun HomeScreen(
+    devices: List<PixelDevice>,
+    transfers: List<Transfer>,
+    onlineDeviceIds: Set<String>,
+    errorMessage: String?,
+    isLoading: Boolean,
+    onRefresh: () -> Unit,
+    onSignOut: () -> Unit
 ) {
-    var status by remember { mutableStateOf("Connecting…") }
-    var devices by remember { mutableStateOf<List<PixelDevice>>(emptyList()) }
-    var transfers by remember { mutableStateOf<List<Transfer>>(emptyList()) }
-    var onlineDeviceIds by remember { mutableStateOf<Set<String>>(emptySet()) }
-
-    LaunchedEffect(Unit) {
-        runCatching {
-            api.health()
-            val loadedDevices = api.listDevices()
-            devices = loadedDevices
-            transfers = api.listTransfers()
-
-            val online = mutableSetOf<String>()
-            for (device in loadedDevices) {
-                try {
-                    if (api.isDeviceOnline(device.id)) {
-                        online += device.id
-                    }
-                } catch (_: Exception) {
-                    // Presence is ephemeral. Durable data should still render.
-                }
-            }
-            onlineDeviceIds = online
-        }.fold(
-            onSuccess = { status = "API online" },
-            onFailure = { error ->
-                when (error) {
-                    is SessionExpiredException,
-                    is SessionRequiredException -> onSessionExpired()
-                    else -> status = "API unavailable"
-                }
-            }
-        )
-    }
-
     LazyColumn(
         modifier = Modifier
             .fillMaxSize()
@@ -258,22 +298,30 @@ private fun PixelGoHome(
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
-
                 TextButton(onClick = onSignOut) {
                     Text("Sign out")
                 }
             }
 
-            Spacer(Modifier.height(8.dp))
-            Text(
-                status,
-                style = MaterialTheme.typography.labelMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
+            if (errorMessage != null) {
+                Spacer(Modifier.height(8.dp))
+                Text(
+                    errorMessage,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+
+            TextButton(
+                onClick = onRefresh,
+                enabled = !isLoading
+            ) {
+                Text(if (isLoading) "Refreshing…" else "Refresh")
+            }
         }
 
         item {
-            Spacer(Modifier.height(14.dp))
+            Spacer(Modifier.height(8.dp))
             Text("YOUR DEVICES", style = MaterialTheme.typography.labelLarge)
         }
 
