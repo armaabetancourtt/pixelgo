@@ -23,7 +23,7 @@ Provisioned local services:
 - MinIO API: `localhost:9000`
 - MinIO console: `localhost:9001`
 
-These services represent the production-oriented architecture, but the first runtime foundation still uses in-memory metadata/idempotency adapters and an in-memory signed payload adapter. That limitation is explicit rather than hidden.
+PostgreSQL and Redis are wired into the runtime whenever `DATABASE_URL` and `REDIS_URL` are present. MinIO is provisioned as the next production-style file adapter; payload bytes still use the explicit in-memory signed-URL adapter for deterministic local/E2E testing.
 
 ## Backend
 
@@ -40,6 +40,8 @@ Health check:
 ```bash
 curl http://localhost:8080/health
 ```
+
+With the example environment loaded, the API uses PostgreSQL for devices/transfers and Redis for presence, Pub/Sub, idempotency and rate limiting. Remove either URL to exercise the corresponding in-memory adapter.
 
 The local server uses `PIXELGO_SIGNING_SECRET` to generate short-lived HMAC-signed upload/download URLs. The value in `.env.example` is development-only.
 
@@ -100,17 +102,20 @@ AndroidX is enabled in `android/gradle.properties`.
 
 Implemented locally:
 
-- devices and transfer metadata in memory;
-- WebSocket hub in process;
-- idempotency records in memory;
+- PostgreSQL repositories for devices + transfer metadata;
+- Redis presence TTLs;
+- Redis Pub/Sub realtime fan-out;
+- Redis cross-replica idempotency;
+- Redis shared rate limiting;
+- in-memory fallbacks when infrastructure URLs are omitted;
 - HMAC-signed upload/download URLs;
-- payload bytes in memory;
+- payload bytes in the development in-memory adapter;
 - exact-size and SHA-256 verification.
 
-Provisioned but not yet wired into the runtime:
+Still intentionally pending:
 
-- PostgreSQL repositories;
-- Redis distributed presence/idempotency/rate limiting;
-- MinIO/S3 production object-storage adapter.
+- MinIO/S3 production object-storage adapter;
+- authentication / account scoping;
+- real APNs / FCM delivery adapters.
 
-The intent is to swap adapters without changing the transfer-domain contract.
+The adapters can change without changing the transfer-domain contract.
