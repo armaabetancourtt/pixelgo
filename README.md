@@ -475,7 +475,9 @@ The backend E2E runs with **authentication required**, PostgreSQL, Redis and Min
 10. old refresh-token reuse revokes the family;
 11. durable authenticated metadata survives an API restart while object bytes remain in MinIO.
 
-Release tags build independent backend, Android and iOS artifacts. Real store/deployment credentials are intentionally not committed.
+Release tags publish the backend image to GHCR with SBOM/provenance, build Android/iOS artifacts, and can promote the same immutable image through GitHub `staging` and `production` Environments. Staging and production are guarded by `/ready` smoke tests; production can require GitHub Environment reviewers. Real infrastructure/store credentials are intentionally not committed.
+
+See [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md).
 
 ## Testing philosophy
 
@@ -573,9 +575,10 @@ Full setup: [docs/LOCAL_DEVELOPMENT.md](docs/LOCAL_DEVELOPMENT.md).
 - Prometheus/OpenMetrics HTTP metrics with bounded-cardinality labels;
 - cross-replica retry safety;
 - authenticated E2E lifecycle;
-- cross-platform CI;
-- Docker image build;
-- release artifacts;
+- cross-platform CI + workflow linting;
+- GHCR backend image with SBOM/provenance;
+- optional staging → readiness → production promotion;
+- Android/iOS release artifacts;
 - bilingual engineering documentation.
 
 ### Intentionally still pending
