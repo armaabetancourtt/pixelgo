@@ -55,4 +55,22 @@ final class PixelGoContractsTests: XCTestCase {
         XCTAssertNotNil(transfer.downloadUrl)
         XCTAssertEqual(transfer.status, .completed)
     }
+
+    func testDecodesAuthTokenPairContract() throws {
+        let json = """
+        {
+          "accessToken":"header.payload.signature",
+          "refreshToken":"opaque-refresh-token-value",
+          "tokenType":"Bearer",
+          "expiresInSeconds":900
+        }
+        """.data(using: .utf8)!
+
+        let pair = try JSONDecoder().decode(TokenPair.self, from: json)
+
+        XCTAssertEqual(pair.tokenType, "Bearer")
+        XCTAssertEqual(pair.expiresInSeconds, 900)
+        XCTAssertEqual(pair.accessToken, "header.payload.signature")
+        XCTAssertEqual(pair.refreshToken, "opaque-refresh-token-value")
+    }
 }
