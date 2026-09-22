@@ -35,6 +35,8 @@ paths:
                 type: array
                 items:
                   $ref: "#/components/schemas/Device"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
     post:
       tags: [devices]
       operationId: registerDevice
@@ -53,6 +55,8 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Device"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
   /v1/devices/{deviceId}:
     delete:
       tags: [devices]
@@ -64,6 +68,8 @@ paths:
           description: Device removed
         "404":
           $ref: "#/components/responses/NotFound"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
   /v1/presence/{deviceId}:
     get:
       tags: [presence]
@@ -96,6 +102,8 @@ paths:
                 type: array
                 items:
                   $ref: "#/components/schemas/Transfer"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
     post:
       tags: [transfers]
       operationId: createTransfer
@@ -116,6 +124,8 @@ paths:
                 $ref: "#/components/schemas/Transfer"
         "400":
           $ref: "#/components/responses/BadRequest"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
   /v1/transfers/{transferId}:
     get:
       tags: [transfers]
@@ -131,6 +141,8 @@ paths:
                 $ref: "#/components/schemas/Transfer"
         "404":
           $ref: "#/components/responses/NotFound"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
   /v1/transfers/{transferId}/uploaded:
     post:
       tags: [transfers]
@@ -147,6 +159,8 @@ paths:
                 $ref: "#/components/schemas/Transfer"
         "409":
           $ref: "#/components/responses/Conflict"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
   /v1/transfers/{transferId}/complete:
     post:
       tags: [transfers]
@@ -163,6 +177,8 @@ paths:
                 $ref: "#/components/schemas/Transfer"
         "409":
           $ref: "#/components/responses/Conflict"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
   /v1/events:
     get:
       tags: [system]
@@ -197,6 +213,18 @@ components:
         type: string
         maxLength: 128
   responses:
+    TooManyRequests:
+      description: Request budget exceeded
+      headers:
+        Retry-After:
+          schema: { type: integer, minimum: 1 }
+        RateLimit-Limit:
+          schema: { type: integer, minimum: 1 }
+        RateLimit-Remaining:
+          schema: { type: integer, minimum: 0 }
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/APIError" }
     BadRequest:
       description: Invalid request
       content:
