@@ -129,6 +129,31 @@ paths:
                 $ref: "#/components/schemas/Device"
         "429":
           $ref: "#/components/responses/TooManyRequests"
+  /v1/devices/{deviceId}/push-token:
+    put:
+      tags: [devices]
+      operationId: updateDevicePushToken
+      parameters:
+        - $ref: "#/components/parameters/DeviceId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdatePushTokenRequest"
+      responses:
+        "200":
+          description: Device push token updated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Device"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
   /v1/devices/{deviceId}:
     delete:
       tags: [devices]
@@ -377,6 +402,13 @@ components:
       properties:
         deviceId: { type: string }
         online: { type: boolean }
+    UpdatePushTokenRequest:
+      type: object
+      required: [pushToken]
+      properties:
+        pushToken:
+          type: string
+          maxLength: 4096
     RegisterDeviceRequest:
       type: object
       required: [name, platform]
