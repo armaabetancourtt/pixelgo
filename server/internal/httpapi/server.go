@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/armaabetancourtt/pixelgo/server/internal/auth"
 	"github.com/armaabetancourtt/pixelgo/server/internal/devices"
 	"github.com/armaabetancourtt/pixelgo/server/internal/files"
 	"github.com/armaabetancourtt/pixelgo/server/internal/presence"
@@ -42,6 +43,13 @@ func WithRateLimiter(limiter ratelimit.Limiter) Option {
 	}
 }
 
+func WithAuth(service *auth.Service, required bool) Option {
+	return func(s *Server) {
+		s.authService = service
+		s.authRequired = required
+	}
+}
+
 type Server struct {
 	devices   *devices.Service
 	transfers *transfers.Service
@@ -50,6 +58,8 @@ type Server struct {
 	presence         presence.Store
 	idempotencyRedis *redis.Client
 	rateLimiter      ratelimit.Limiter
+	authService      *auth.Service
+	authRequired     bool
 }
 
 func New(
@@ -71,6 +81,11 @@ func New(
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health", s.health)
+	if s.authService != nil {
+		mux.HandleFunc("POST /v1/auth/register", s.authRegister)
+		mux.HandleFunc("POST /v1/auth/login", s.authLogin)
+		mux.HandleFunc("POST /v1/auth/refresh", s.authRefresh)
+	}
 	mux.HandleFunc("GET /v1/devices", s.listDevices)
 	mux.HandleFunc("POST /v1/devices", s.registerDevice)
 	mux.HandleFunc("DELETE /v1/devices/{deviceId}", s.deleteDevice)
@@ -79,7 +94,7 @@ func New(
 	mux.HandleFunc("GET /v1/transfers/{transferId}", s.getTransfer)
 	mux.HandleFunc("POST /v1/transfers/{transferId}/uploaded", s.markUploaded)
 	mux.HandleFunc("POST /v1/transfers/{transferId}/complete", s.complete)
-	mux.Handle("GET /v1/events", hub)
+	mux.HandleFunc("GET /v1/events", s.events)
 
 	if s.presence != nil {
 		mux.HandleFunc("GET /v1/presence/{deviceId}", s.getPresence)
@@ -96,11 +111,16 @@ func New(
 	}
 
 	if s.idempotencyRedis != nil {
-		return withRedisIdempotency(handler, s.idempotencyRedis, 24*time.Hour)
+		handler = withRedisIdempotency(handler, s.idempotencyRedis, 24*time.Hour)
+	} else {
+		idempotency := newIdempotencyStore(24 * time.Hour)
+		handler = withIdempotency(handler, idempotency)
 	}
 
-	idempotency := newIdempotencyStore(24 * time.Hour)
-	return withIdempotency(handler, idempotency)
+	if s.authRequired && s.authService != nil {
+		handler = withAuthentication(handler, s.authService)
+	}
+	return handler
 }
 
 func (s *Server) health(w http.ResponseWriter, _ *http.Request) {
@@ -144,6 +164,10 @@ func (s *Server) deleteDevice(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) getPresence(w http.ResponseWriter, r *http.Request) {
 	deviceID := r.PathValue("deviceId")
+	if _, err := s.devices.Get(r.Context(), deviceID); err != nil {
+		writeError(w, http.StatusNotFound, "not_found", "device not found")
+		return
+	}
 	online, err := s.presence.IsOnline(r.Context(), deviceID)
 	if err != nil {
 		writeError(w, http.StatusServiceUnavailable, "presence_unavailable", "presence service is unavailable")
@@ -153,6 +177,19 @@ func (s *Server) getPresence(w http.ResponseWriter, r *http.Request) {
 		"deviceId": deviceID,
 		"online":   online,
 	})
+}
+
+func (s *Server) events(w http.ResponseWriter, r *http.Request) {
+	deviceID := r.URL.Query().Get("deviceId")
+	if deviceID == "" {
+		writeError(w, http.StatusBadRequest, "device_required", "deviceId query parameter is required")
+		return
+	}
+	if _, err := s.devices.Get(r.Context(), deviceID); err != nil {
+		writeError(w, http.StatusNotFound, "not_found", "device not found")
+		return
+	}
+	s.hub.ServeHTTP(w, r)
 }
 
 func (s *Server) listTransfers(w http.ResponseWriter, r *http.Request) {
