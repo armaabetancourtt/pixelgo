@@ -26,6 +26,7 @@ actor APIClient {
     private let sessionStore: SessionStore
     private let decoder: JSONDecoder
     private let encoder = JSONEncoder()
+    private var refreshTask: Task<TokenPair, Error>?
 
     init(
         baseURL: URL,
@@ -60,6 +61,8 @@ actor APIClient {
     }
 
     func signOut() async {
+        refreshTask?.cancel()
+        refreshTask = nil
         try? await sessionStore.clear()
     }
 
@@ -103,7 +106,9 @@ actor APIClient {
 
         if http.statusCode == 401 && retryAfterRefresh {
             do {
-                _ = try await refreshSession()
+                _ = try await refreshSession(
+                    afterFailedAccessToken: pair.accessToken
+                )
                 return try await performAuthenticated(
                     original,
                     retryAfterRefresh: false
@@ -120,17 +125,50 @@ actor APIClient {
         return try decoder.decode(T.self, from: data)
     }
 
-    private func refreshSession() async throws -> TokenPair {
+    /// Coalesces simultaneous 401 responses into one refresh-token rotation.
+    ///
+    /// Refresh tokens are one-time-use. Without single-flight coordination,
+    /// two concurrent API calls could both attempt to rotate the same token;
+    /// the second attempt would correctly look like token reuse and revoke
+    /// the entire refresh family.
+    private func refreshSession(
+        afterFailedAccessToken failedAccessToken: String
+    ) async throws -> TokenPair {
         guard let current = try await sessionStore.load() else {
             throw APIError.noSession
         }
 
-        let pair: TokenPair = try await publicPost(
+        // Another request already refreshed while this request was in flight.
+        if current.accessToken != failedAccessToken {
+            return current
+        }
+
+        if let refreshTask {
+            return try await refreshTask.value
+        }
+
+        let refreshToken = current.refreshToken
+        let task = Task<TokenPair, Error> {
+            try await self.performRefresh(refreshToken: refreshToken)
+        }
+        refreshTask = task
+
+        do {
+            let pair = try await task.value
+            try await sessionStore.save(pair)
+            refreshTask = nil
+            return pair
+        } catch {
+            refreshTask = nil
+            throw error
+        }
+    }
+
+    private func performRefresh(refreshToken: String) async throws -> TokenPair {
+        try await publicPost(
             "/v1/auth/refresh",
-            body: RefreshRequest(refreshToken: current.refreshToken)
+            body: RefreshRequest(refreshToken: refreshToken)
         )
-        try await sessionStore.save(pair)
-        return pair
     }
 
     private func publicPost<Body: Encodable, Response: Decodable>(
