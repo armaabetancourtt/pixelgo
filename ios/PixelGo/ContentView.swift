@@ -18,7 +18,7 @@ struct ContentView: View {
                         ForEach(model.devices) { device in
                             HStack(spacing: 12) {
                                 Circle()
-                                    .fill(device.online ? .green : .secondary)
+                                    .fill(device.online ? Color.green : Color.gray)
                                     .frame(width: 8, height: 8)
                                 VStack(alignment: .leading, spacing: 2) {
                                     Text(device.name)
