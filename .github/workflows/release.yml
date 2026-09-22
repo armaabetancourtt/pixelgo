@@ -1,4 +1,4 @@
-name: Release candidate
+name: Release
 
 on:
   push:
@@ -7,52 +7,245 @@ on:
 
 permissions:
   contents: read
+  packages: write
 
 jobs:
   backend:
-    name: Backend image artifact
+    name: Backend · publish GHCR image
     runs-on: ubuntu-latest
+    outputs:
+      image: ${{ steps.image.outputs.ref }}
     steps:
       - uses: actions/checkout@v4
-      - run: docker build -t pixelgo-api:${GITHUB_REF_NAME} server
-      - run: docker save pixelgo-api:${GITHUB_REF_NAME} | gzip > pixelgo-api.tar.gz
-      - uses: actions/upload-artifact@v4
+
+      - id: image
+        name: Resolve immutable image reference
+        shell: bash
+        run: |
+          REPOSITORY="${GITHUB_REPOSITORY,,}"
+          echo "ref=ghcr.io/${REPOSITORY}:${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
         with:
-          name: pixelgo-api-${{ github.ref_name }}
-          path: pixelgo-api.tar.gz
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+
+      - name: Build and publish backend image
+        uses: docker/build-push-action@v6
+        with:
+          context: server
+          push: true
+          tags: |
+            ${{ steps.image.outputs.ref }}
+            ghcr.io/${{ github.repository }}:sha-${{ github.sha }}
+          provenance: true
+          sbom: true
 
   android:
-    name: Android bundle
+    name: Android · release bundle
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: "17"
+
       - uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: "8.11.1"
-      - run: gradle -p android --no-daemon :app:bundleRelease
+
+      - name: Build unsigned release bundle
+        run: gradle -p android --no-daemon :app:bundleRelease
+
       - uses: actions/upload-artifact@v4
         with:
           name: pixelgo-android-${{ github.ref_name }}
           path: android/app/build/outputs/bundle/release/*.aab
+          if-no-files-found: error
 
   ios:
-    name: iOS unsigned archive
+    name: iOS · unsigned release archive
     runs-on: macos-15
     steps:
       - uses: actions/checkout@v4
+
       - run: brew install xcodegen
+
       - working-directory: ios
         run: xcodegen generate
+
       - name: Archive without signing
         working-directory: ios
         run: |
-          xcodebuild             -project PixelGo.xcodeproj             -scheme PixelGo             -configuration Release             -destination 'generic/platform=iOS'             -archivePath "${{ github.workspace }}/PixelGo.xcarchive"             CODE_SIGNING_ALLOWED=NO             archive
-          tar -czf "${{ github.workspace }}/PixelGo.xcarchive.tar.gz"             -C "${{ github.workspace }}" PixelGo.xcarchive
+          xcodebuild \
+            -project PixelGo.xcodeproj \
+            -scheme PixelGo \
+            -configuration Release \
+            -destination 'generic/platform=iOS' \
+            -archivePath "${{ github.workspace }}/PixelGo.xcarchive" \
+            CODE_SIGNING_ALLOWED=NO \
+            archive
+
+          tar -czf "${{ github.workspace }}/PixelGo.xcarchive.tar.gz" \
+            -C "${{ github.workspace }}" PixelGo.xcarchive
+
       - uses: actions/upload-artifact@v4
         with:
           name: pixelgo-ios-${{ github.ref_name }}
           path: PixelGo.xcarchive.tar.gz
+          if-no-files-found: error
+
+  staging:
+    name: Backend · deploy staging
+    needs: backend
+    if: ${{ vars.STAGING_DEPLOY_ENABLED == 'true' }}
+    runs-on: ubuntu-latest
+    environment:
+      name: staging
+      url: ${{ vars.STAGING_APP_URL }}
+    steps:
+      - name: Configure pinned SSH host
+        shell: bash
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.STAGING_SSH_PRIVATE_KEY }}
+          SSH_KNOWN_HOSTS: ${{ secrets.STAGING_SSH_KNOWN_HOSTS }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$SSH_PRIVATE_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          printf '%s\n' "$SSH_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/known_hosts
+
+      - name: Pull and replace staging container
+        shell: bash
+        env:
+          SSH_HOST: ${{ secrets.STAGING_SSH_HOST }}
+          SSH_USER: ${{ secrets.STAGING_SSH_USER }}
+          IMAGE: ${{ needs.backend.outputs.image }}
+        run: |
+          ssh "${SSH_USER}@${SSH_HOST}" \
+            "IMAGE='${IMAGE}' bash -s" <<'REMOTE'
+          set -euo pipefail
+
+          docker pull "$IMAGE"
+          docker rm -f pixelgo-api-staging >/dev/null 2>&1 || true
+          docker run -d \
+            --restart unless-stopped \
+            --name pixelgo-api-staging \
+            --env-file /etc/pixelgo/staging.env \
+            -p 8080:8080 \
+            "$IMAGE"
+          REMOTE
+
+      - name: Staging readiness smoke test
+        shell: bash
+        env:
+          HEALTH_URL: ${{ vars.STAGING_HEALTH_URL }}
+        run: |
+          for i in {1..30}; do
+            if curl --fail --silent "${HEALTH_URL%/}/ready" | grep -q '"status":"ready"'; then
+              echo "PASS: staging is ready"
+              exit 0
+            fi
+            sleep 2
+          done
+
+          echo "staging readiness failed" >&2
+          exit 1
+
+  production:
+    name: Backend · promote production
+    needs: [backend, staging]
+    if: ${{ always() && vars.PRODUCTION_DEPLOY_ENABLED == 'true' && (needs.staging.result == 'success' || needs.staging.result == 'skipped') }}
+    runs-on: ubuntu-latest
+    environment:
+      name: production
+      url: ${{ vars.PRODUCTION_APP_URL }}
+    steps:
+      - name: Configure pinned SSH host
+        shell: bash
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.PRODUCTION_SSH_PRIVATE_KEY }}
+          SSH_KNOWN_HOSTS: ${{ secrets.PRODUCTION_SSH_KNOWN_HOSTS }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$SSH_PRIVATE_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          printf '%s\n' "$SSH_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/known_hosts
+
+      - name: Preflight candidate on production host
+        shell: bash
+        env:
+          SSH_HOST: ${{ secrets.PRODUCTION_SSH_HOST }}
+          SSH_USER: ${{ secrets.PRODUCTION_SSH_USER }}
+          IMAGE: ${{ needs.backend.outputs.image }}
+        run: |
+          ssh "${SSH_USER}@${SSH_HOST}" \
+            "IMAGE='${IMAGE}' bash -s" <<'REMOTE'
+          set -euo pipefail
+
+          docker pull "$IMAGE"
+          docker rm -f pixelgo-api-candidate >/dev/null 2>&1 || true
+          docker run -d \
+            --name pixelgo-api-candidate \
+            --env-file /etc/pixelgo/production.env \
+            -p 127.0.0.1:18080:8080 \
+            "$IMAGE"
+
+          cleanup() {
+            docker rm -f pixelgo-api-candidate >/dev/null 2>&1 || true
+          }
+          trap cleanup EXIT
+
+          for i in {1..30}; do
+            if curl --fail --silent http://127.0.0.1:18080/ready | grep -q '"status":"ready"'; then
+              exit 0
+            fi
+            sleep 2
+          done
+
+          docker logs pixelgo-api-candidate
+          exit 1
+          REMOTE
+
+      - name: Promote validated image
+        shell: bash
+        env:
+          SSH_HOST: ${{ secrets.PRODUCTION_SSH_HOST }}
+          SSH_USER: ${{ secrets.PRODUCTION_SSH_USER }}
+          IMAGE: ${{ needs.backend.outputs.image }}
+        run: |
+          ssh "${SSH_USER}@${SSH_HOST}" \
+            "IMAGE='${IMAGE}' bash -s" <<'REMOTE'
+          set -euo pipefail
+
+          docker rm -f pixelgo-api >/dev/null 2>&1 || true
+          docker run -d \
+            --restart unless-stopped \
+            --name pixelgo-api \
+            --env-file /etc/pixelgo/production.env \
+            -p 8080:8080 \
+            "$IMAGE"
+          REMOTE
+
+      - name: Production readiness smoke test
+        shell: bash
+        env:
+          HEALTH_URL: ${{ vars.PRODUCTION_HEALTH_URL }}
+        run: |
+          for i in {1..30}; do
+            if curl --fail --silent "${HEALTH_URL%/}/ready" | grep -q '"status":"ready"'; then
+              echo "PASS: production is ready"
+              exit 0
+            fi
+            sleep 2
+          done
+
+          echo "production readiness failed" >&2
+          exit 1
