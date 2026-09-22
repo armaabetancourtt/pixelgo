@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 import UserNotifications
 
 @main
@@ -37,6 +38,7 @@ final class AppModel: ObservableObject {
     @Published var errorMessage: String?
 
     private let api: APIClient
+    private var realtimeTask: Task<Void, Never>?
 
     init() {
         let sessionStore = SessionStore()
@@ -50,7 +52,7 @@ final class AppModel: ObservableObject {
         isAuthenticated = await api.hasStoredSession()
         didBootstrap = true
         if isAuthenticated {
-            await reload()
+            await prepareAuthenticatedSession()
         }
     }
 
@@ -67,6 +69,8 @@ final class AppModel: ObservableObject {
     }
 
     func signOut() async {
+        realtimeTask?.cancel()
+        realtimeTask = nil
         await api.signOut()
         devices = []
         transfers = []
@@ -106,6 +110,51 @@ final class AppModel: ObservableObject {
         }
     }
 
+    private func prepareAuthenticatedSession() async {
+        do {
+            let device = try await api.ensureCurrentDevice(
+                name: UIDevice.current.name,
+                platform: "ios"
+            )
+            startRealtime(deviceID: device.id)
+            await reload()
+        } catch APIClient.APIError.refreshFailed {
+            await signOut()
+            errorMessage = "Your session expired. Sign in again."
+        } catch APIClient.APIError.noSession {
+            await signOut()
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    private func startRealtime(deviceID: String) {
+        realtimeTask?.cancel()
+
+        realtimeTask = Task { [weak self] in
+            guard let self else { return }
+
+            while !Task.isCancelled && self.isAuthenticated {
+                do {
+                    try await self.api.openEvents(deviceID: deviceID)
+
+                    while !Task.isCancelled {
+                        _ = try await self.api.nextEvent()
+                        await self.reload()
+                    }
+                } catch {
+                    if Task.isCancelled { break }
+
+                    // Force an authenticated request before reconnecting. If
+                    // the access token expired, APIClient rotates refresh once
+                    // and the next WebSocket handshake uses the new token.
+                    _ = try? await self.api.listDevices()
+                    try? await Task.sleep(nanoseconds: 1_000_000_000)
+                }
+            }
+        }
+    }
+
     private func authenticate(
         operation: () async throws -> Void
     ) async {
@@ -116,7 +165,7 @@ final class AppModel: ObservableObject {
         do {
             try await operation()
             isAuthenticated = true
-            await reload()
+            await prepareAuthenticatedSession()
         } catch {
             errorMessage = error.localizedDescription
         }
