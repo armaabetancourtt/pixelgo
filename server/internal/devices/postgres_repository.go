@@ -100,6 +100,38 @@ func (r *PostgresRepository) Get(ctx context.Context, id string) (Device, error)
 	return device, err
 }
 
+func (r *PostgresRepository) UpdatePushToken(
+	ctx context.Context,
+	id string,
+	token string,
+) (Device, error) {
+	userID := auth.UserID(ctx)
+
+	query := `UPDATE devices
+	          SET push_token = NULLIF($2, '')
+	          WHERE id = $1`
+	args := []any{id, token}
+	if userID != "" {
+		query += ` AND user_id = $3::uuid`
+		args = append(args, userID)
+	}
+	query += `
+	          RETURNING id, name, platform, COALESCE(push_token, ''), created_at`
+
+	var device Device
+	err := r.db.QueryRow(ctx, query, args...).Scan(
+		&device.ID,
+		&device.Name,
+		&device.Platform,
+		&device.PushToken,
+		&device.CreatedAt,
+	)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Device{}, ErrNotFound
+	}
+	return device, err
+}
+
 func (r *PostgresRepository) Delete(ctx context.Context, id string) error {
 	userID := auth.UserID(ctx)
 
