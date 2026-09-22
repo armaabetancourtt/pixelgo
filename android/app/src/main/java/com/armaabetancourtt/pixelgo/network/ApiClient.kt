@@ -122,7 +122,8 @@ class ApiClient(
         uploadSigned(
             url = uploadUrl,
             payload = payload,
-            contentType = contentType
+            contentType = contentType,
+            checksum = checksum
         )
 
         return parseTransfer(
@@ -308,7 +309,8 @@ class ApiClient(
     private suspend fun uploadSigned(
         url: String,
         payload: ByteArray,
-        contentType: String
+        contentType: String,
+        checksum: String
     ) = withContext(Dispatchers.IO) {
         val connection = URL(url).openConnection() as HttpURLConnection
         try {
@@ -317,6 +319,7 @@ class ApiClient(
             connection.connectTimeout = 5_000
             connection.readTimeout = 5_000
             connection.setRequestProperty("Content-Type", contentType)
+            connection.setRequestProperty("X-Amz-Meta-Sha256", checksum)
             connection.setFixedLengthStreamingMode(payload.size)
             connection.outputStream.use { it.write(payload) }
 
