@@ -141,8 +141,22 @@ func (w *Worker) deliver(ctx context.Context, delivery Delivery) {
 	final := errors.As(err, &permanent) || attempt >= w.maxAttempts
 
 	backoff := retryBackoff(attempt)
+	retryCtx := ctx
+	var retryCancel context.CancelFunc
+	if ctx.Err() != nil {
+		// A deploy/shutdown may cancel a provider request while this row is
+		// claimed. Use a short independent cleanup context so the row is not
+		// stranded behind the stale-lock timeout.
+		retryCtx, retryCancel = context.WithTimeout(
+			context.Background(),
+			2*time.Second,
+		)
+		defer retryCancel()
+		backoff = 0
+	}
+
 	if retryErr := w.repo.Retry(
-		ctx,
+		retryCtx,
 		delivery.ID,
 		err.Error(),
 		time.Now().UTC().Add(backoff),
