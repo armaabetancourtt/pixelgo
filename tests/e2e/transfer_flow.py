@@ -89,6 +89,15 @@ def main():
         bearer(access, {"Idempotency-Key": "e2e-device-android"}),
     )
 
+    push_updated = request(
+        "PUT",
+        f"/v1/devices/{pixel['id']}/push-token",
+        {"pushToken": "e2e-fcm-token-not-a-real-provider-token"},
+        bearer(access),
+    )
+    assert push_updated["id"] == pixel["id"]
+    assert "pushToken" not in push_updated
+
     payload = b"pixel-go-e2e"
     checksum = hashlib.sha256(payload).hexdigest()
     create_body = {
@@ -156,6 +165,14 @@ def main():
         headers=bearer(secondary_access),
     )
     assert secondary_devices == [], secondary_devices
+
+    cross_token_status, _, _ = request_status(
+        "PUT",
+        f"/v1/devices/{pixel['id']}/push-token",
+        {"pushToken": "attacker-token"},
+        bearer(secondary_access),
+    )
+    assert cross_token_status == 404, cross_token_status
 
     cross_user_status, _, _ = request_status(
         "GET",
