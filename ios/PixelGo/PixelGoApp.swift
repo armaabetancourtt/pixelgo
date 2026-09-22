@@ -30,6 +30,7 @@ struct PixelGoApp: App {
 final class AppModel: ObservableObject {
     @Published var devices: [PixelDevice] = []
     @Published var transfers: [Transfer] = []
+    @Published var onlineDeviceIDs: Set<String> = []
     @Published var isLoading = false
     @Published var errorMessage: String?
 
@@ -39,10 +40,20 @@ final class AppModel: ObservableObject {
         isLoading = true
         defer { isLoading = false }
         do {
-            async let loadedDevices = api.listDevices()
-            async let loadedTransfers = api.listTransfers()
-            devices = try await loadedDevices
-            transfers = try await loadedTransfers
+            async let devicesTask = api.listDevices()
+            async let transfersTask = api.listTransfers()
+
+            let loadedDevices = try await devicesTask
+            devices = loadedDevices
+            transfers = try await transfersTask
+
+            var onlineIDs = Set<String>()
+            for device in loadedDevices {
+                if let presence = try? await api.devicePresence(device.id), presence.online {
+                    onlineIDs.insert(device.id)
+                }
+            }
+            onlineDeviceIDs = onlineIDs
             errorMessage = nil
         } catch {
             errorMessage = error.localizedDescription
