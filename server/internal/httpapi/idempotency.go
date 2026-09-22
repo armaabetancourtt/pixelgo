@@ -14,6 +14,7 @@ const maxIdempotentBodyBytes = 1 << 20
 
 type idempotencyEntry struct {
 	fingerprint string
+	ready       chan struct{}
 	status      int
 	header      http.Header
 	body        []byte
@@ -22,13 +23,13 @@ type idempotencyEntry struct {
 
 type idempotencyStore struct {
 	mu      sync.Mutex
-	entries map[string]idempotencyEntry
+	entries map[string]*idempotencyEntry
 	ttl     time.Duration
 }
 
 func newIdempotencyStore(ttl time.Duration) *idempotencyStore {
 	return &idempotencyStore{
-		entries: make(map[string]idempotencyEntry),
+		entries: make(map[string]*idempotencyEntry),
 		ttl:     ttl,
 	}
 }
@@ -62,39 +63,47 @@ func withIdempotency(next http.Handler, store *idempotencyStore) http.Handler {
 		store.mu.Lock()
 		store.pruneExpiredLocked(now)
 		if existing, ok := store.entries[key]; ok {
-			store.mu.Unlock()
 			if existing.fingerprint != fingerprint {
+				store.mu.Unlock()
 				writeError(w, http.StatusConflict, "idempotency_key_reused", "idempotency key was already used with a different request")
 				return
 			}
+			ready := existing.ready
+			store.mu.Unlock()
+
+			<-ready
 			copyHeader(w.Header(), existing.header)
 			w.Header().Set("Idempotency-Replayed", "true")
 			w.WriteHeader(existing.status)
 			_, _ = w.Write(existing.body)
 			return
 		}
+
+		entry := &idempotencyEntry{
+			fingerprint: fingerprint,
+			ready:       make(chan struct{}),
+		}
+		store.entries[key] = entry
 		store.mu.Unlock()
 
 		recorder := newBufferedResponseWriter()
 		next.ServeHTTP(recorder, r)
 
+		entry.status = recorder.status
+		entry.header = recorder.header.Clone()
+		entry.body = append([]byte(nil), recorder.body.Bytes()...)
+		entry.expiresAt = now.Add(store.ttl)
+
+		store.mu.Lock()
+		if recorder.status >= http.StatusInternalServerError {
+			delete(store.entries, key)
+		}
+		store.mu.Unlock()
+		close(entry.ready)
+
 		copyHeader(w.Header(), recorder.header)
 		w.WriteHeader(recorder.status)
 		_, _ = w.Write(recorder.body.Bytes())
-
-		if recorder.status >= 500 {
-			return
-		}
-
-		store.mu.Lock()
-		store.entries[key] = idempotencyEntry{
-			fingerprint: fingerprint,
-			status:      recorder.status,
-			header:      recorder.header.Clone(),
-			body:        append([]byte(nil), recorder.body.Bytes()...),
-			expiresAt:   now.Add(store.ttl),
-		}
-		store.mu.Unlock()
 	})
 }
 
@@ -110,16 +119,17 @@ func requestFingerprint(r *http.Request, body []byte) string {
 
 func (s *idempotencyStore) pruneExpiredLocked(now time.Time) {
 	for key, entry := range s.entries {
-		if !entry.expiresAt.After(now) {
+		if !entry.expiresAt.IsZero() && !entry.expiresAt.After(now) {
 			delete(s.entries, key)
 		}
 	}
 }
 
 type bufferedResponseWriter struct {
-	header http.Header
-	status int
-	body   bytes.Buffer
+	header      http.Header
+	status      int
+	wroteHeader bool
+	body        bytes.Buffer
 }
 
 func newBufferedResponseWriter() *bufferedResponseWriter {
@@ -134,13 +144,17 @@ func (w *bufferedResponseWriter) Header() http.Header {
 }
 
 func (w *bufferedResponseWriter) WriteHeader(status int) {
-	if w.status != http.StatusOK || w.body.Len() > 0 {
+	if w.wroteHeader {
 		return
 	}
 	w.status = status
+	w.wroteHeader = true
 }
 
 func (w *bufferedResponseWriter) Write(p []byte) (int, error) {
+	if !w.wroteHeader {
+		w.WriteHeader(http.StatusOK)
+	}
 	return w.body.Write(p)
 }
 
