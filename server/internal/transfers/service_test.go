@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"io/fs"
+	"strings"
 	"testing"
 )
 
@@ -218,5 +219,83 @@ func TestCannotCompleteBeforeUpload(t *testing.T) {
 		created.ID,
 	); err != ErrInvalidTransition {
 		t.Fatalf("expected invalid transition, got %v", err)
+	}
+}
+
+
+func TestCreateEnforcesContractLimits(t *testing.T) {
+	tests := []struct {
+		name string
+		in   CreateInput
+	}{
+		{
+			name: "payload larger than 1 GiB",
+			in: CreateInput{
+				SourceDeviceID:      "ios-1",
+				DestinationDeviceID: "android-1",
+				Kind:                KindFile,
+				SizeBytes:           (1 << 30) + 1,
+				SHA256:              checksum,
+			},
+		},
+		{
+			name: "display name longer than 255 characters",
+			in: CreateInput{
+				SourceDeviceID:      "ios-1",
+				DestinationDeviceID: "android-1",
+				Kind:                KindFile,
+				DisplayName:         strings.Repeat("a", 256),
+				SizeBytes:           1,
+				SHA256:              checksum,
+			},
+		},
+		{
+			name: "content type longer than 120 characters",
+			in: CreateInput{
+				SourceDeviceID:      "ios-1",
+				DestinationDeviceID: "android-1",
+				Kind:                KindFile,
+				ContentType:         strings.Repeat("a", 121),
+				SizeBytes:           1,
+				SHA256:              checksum,
+			},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			service := NewService(
+				NewMemoryRepository(),
+				&noOpPublisher{},
+				fakeURLs{},
+			)
+			if _, err := service.Create(
+				context.Background(),
+				test.in,
+			); err != ErrInvalidInput {
+				t.Fatalf("expected invalid input, got %v", err)
+			}
+		})
+	}
+}
+
+func TestCreateCountsUnicodeDisplayNameCharacters(t *testing.T) {
+	service := NewService(
+		NewMemoryRepository(),
+		&noOpPublisher{},
+		fakeURLs{},
+	)
+
+	_, err := service.Create(context.Background(), CreateInput{
+		SourceDeviceID:      "ios-1",
+		DestinationDeviceID: "android-1",
+		Kind:                KindText,
+		DisplayName:         strings.Repeat("é", 255),
+		ContentType:         "text/plain",
+		SizeBytes:           1,
+		SHA256:              checksum,
+	})
+	if err != nil {
+		t.Fatal(err)
 	}
 }
