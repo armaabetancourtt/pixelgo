@@ -284,6 +284,8 @@ Implementado:
 - upload binario directo a S3/MinIO con presigned PUT;
 - download verificado y guardado local antes de marcar Delivered;
 - BackgroundTasks;
+- registro APNs + sync de rotación del device token;
+- presentación de notificaciones en foreground;
 - XCTest + contract tests;
 - XcodeGen.
 
@@ -305,8 +307,45 @@ Implementado:
 - download verificado + guardado con Storage Access Framework antes de Delivered;
 - WorkManager;
 - Room boundary;
-- FCM boundary;
+- registro del token FCM + sync de `onNewToken`;
+- FirebaseMessagingService para notificaciones;
 - JUnit.
+
+## Push durable
+
+Push funciona como fallback cuando el dispositivo destino no está alcanzable por realtime.
+
+~~~text
+transfer.ready
+      ↓
+transacción PostgreSQL
+      ├── status = ready
+      └── notification_outbox
+                 ↓
+      worker + SKIP LOCKED
+                 ↓
+        consulta presence Redis
+          ↙             ↘
+      online            offline
+        ↓                  ↓
+    WebSocket           APNs / FCM
+                           ↓
+                    retry con backoff
+~~~
+
+Implementado:
+
+- rotación de push token scoped por usuario;
+- registro y rotación APNs desde iOS;
+- token FCM actual + `onNewToken` en Android;
+- outbox creado transaccionalmente al pasar a `ready`;
+- workers concurrentes con `FOR UPDATE SKIP LOCKED`;
+- si el device está online por WebSocket, se evita push duplicado;
+- retries exponenciales para errores temporales;
+- errores permanentes dejan de reintentarse;
+- APNs token-based auth ES256;
+- FCM HTTP v1 con OAuth2 de service account;
+- credenciales reales fuera del repositorio.
 
 ## Observabilidad
 
@@ -385,7 +424,7 @@ El E2E corre con auth obligatorio, PostgreSQL, Redis y MinIO reales, y prueba:
 ### Pendiente explícitamente
 
 - lifecycle/retention de objetos, quotas y hardening de bucket policy;
-- APNs / FCM reales;
+- credenciales APNs / FCM reales para los proyectos desplegados;
 - upload/resume en background para payloads grandes;
 - auto-download en background y política de guardado;
 - E2EE de contenido;
