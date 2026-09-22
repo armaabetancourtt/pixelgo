@@ -54,7 +54,7 @@ func (r *PostgresRepository) List(ctx context.Context) ([]Device, error) {
 	}
 	defer rows.Close()
 
-	var out []Device
+	out := make([]Device, 0)
 	for rows.Next() {
 		var device Device
 		if err := rows.Scan(
