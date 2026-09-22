@@ -51,6 +51,22 @@ This repository does not claim end-to-end content encryption. TLS protects trans
 - S3-compatible upload/download routes use short-lived capability URLs rather than Bearer auth;
 - local fallback file routes use HMAC capability URLs and are disabled while S3-compatible storage is active.
 
+## Realtime isolation
+
+Authenticated WebSocket connections are bound to both a user and an owned device ID.
+
+The realtime broker uses internal routing targets across replicas. Transfer events are device-scoped and presence events are user-scoped; there is no fallback to a global broadcast when routing metadata is absent.
+
+Public WebSocket event payloads do not include:
+
+- presigned object-storage URLs;
+- push tokens;
+- Authorization credentials;
+- refresh/access tokens;
+- cross-account routing metadata.
+
+A realtime event tells the native client that state changed; the client then reloads the resource through the normal authorized REST boundary.
+
 ## Retry safety
 
 POST mutations support idempotency keys.
