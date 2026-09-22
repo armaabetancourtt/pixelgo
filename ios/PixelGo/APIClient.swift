@@ -27,6 +27,7 @@ actor APIClient {
     private let decoder: JSONDecoder
     private let encoder = JSONEncoder()
     private var refreshTask: Task<TokenPair, Error>?
+    private var refreshTask: Task<TokenPair, Error>?
 
     init(
         baseURL: URL,
