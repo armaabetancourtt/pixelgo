@@ -9,9 +9,30 @@ import (
 	"regexp"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
-var checksumPattern = regexp.MustCompile(`^[a-fA-F0-9]{64}$`)
+const (
+	maxTransferBytes      int64 = 1 << 30
+	maxDisplayNameRunes         = 255
+	maxContentTypeRunes         = 120
+)
+
+var checksumPattern = regexp.MustCompile(`^[a-fA-F0-9]{64}package transfers
+
+import (
+	"context"
+	"crypto/rand"
+	"encoding/hex"
+	"errors"
+	"io/fs"
+	"regexp"
+	"strings"
+	"time"
+	"unicode/utf8"
+)
+
+)
 
 var (
 	ErrNotFound          = errors.New("transfer not found")
@@ -62,6 +83,9 @@ func (s *Service) Create(ctx context.Context, in CreateInput) (Transfer, error) 
 	if in.SourceDeviceID == "" ||
 		in.DestinationDeviceID == "" ||
 		in.SizeBytes < 0 ||
+		in.SizeBytes > maxTransferBytes ||
+		utf8.RuneCountInString(in.DisplayName) > maxDisplayNameRunes ||
+		utf8.RuneCountInString(in.ContentType) > maxContentTypeRunes ||
 		!checksumPattern.MatchString(in.SHA256) {
 		return Transfer{}, ErrInvalidInput
 	}
