@@ -14,6 +14,7 @@ import (
 	"github.com/armaabetancourtt/pixelgo/server/internal/platform/postgresdb"
 	"github.com/armaabetancourtt/pixelgo/server/internal/platform/redisdb"
 	"github.com/armaabetancourtt/pixelgo/server/internal/presence"
+	"github.com/armaabetancourtt/pixelgo/server/internal/ratelimit"
 	"github.com/armaabetancourtt/pixelgo/server/internal/realtime"
 	"github.com/armaabetancourtt/pixelgo/server/internal/transfers"
 )
@@ -50,8 +51,9 @@ func main() {
 	}
 
 	var presenceStore presence.Store = presence.NewMemoryStore()
+	var requestLimiter ratelimit.Limiter = ratelimit.NewMemoryLimiter()
 	var broker realtime.Broker
-	httpOptions := make([]httpapi.Option, 0, 2)
+	httpOptions := make([]httpapi.Option, 0, 3)
 
 	if redisURL := os.Getenv("REDIS_URL"); redisURL != "" {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -64,6 +66,7 @@ func main() {
 		defer redisClient.Close()
 
 		presenceStore = presence.NewRedisStore(redisClient)
+		requestLimiter = ratelimit.NewRedisLimiter(redisClient)
 		broker = realtime.NewRedisBroker(redisClient)
 		httpOptions = append(httpOptions, httpapi.WithRedisIdempotency(redisClient))
 		log.Printf("pixelgo ephemeral state: redis")
@@ -84,7 +87,11 @@ func main() {
 	fileService := files.NewService(baseURL, signingSecret, 10*time.Minute)
 	deviceService := devices.NewService(deviceRepo)
 	transferService := transfers.NewService(transferRepo, hub, fileService)
-	httpOptions = append(httpOptions, httpapi.WithPresence(presenceStore))
+	httpOptions = append(
+		httpOptions,
+		httpapi.WithPresence(presenceStore),
+		httpapi.WithRateLimiter(requestLimiter),
+	)
 	handler := httpapi.New(
 		deviceService,
 		transferService,
