@@ -1,0 +1,30 @@
+name: PixelGo
+options:
+  bundleIdPrefix: com.armaabetancourtt
+  deploymentTarget:
+    iOS: "18.0"
+settings:
+  base:
+    SWIFT_VERSION: 6.0
+targets:
+  PixelGo:
+    type: application
+    platform: iOS
+    sources:
+      - PixelGo
+    info:
+      path: PixelGo/Info.plist
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.armaabetancourtt.pixelgo
+        CODE_SIGN_STYLE: Automatic
+    scheme:
+      testTargets:
+        - PixelGoTests
+  PixelGoTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources:
+      - PixelGoTests
+    dependencies:
+      - target: PixelGo
