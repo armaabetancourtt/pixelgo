@@ -12,7 +12,6 @@ import (
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
-	"golang.org/x/crypto/bcrypt"
 )
 
 var (
@@ -21,7 +20,7 @@ var (
 	ErrInvalidRefresh     = errors.New("invalid refresh token")
 	ErrRefreshReuse       = errors.New("refresh token reuse detected")
 	ErrInvalidAccess      = errors.New("invalid access token")
-	ErrWeakPassword       = errors.New("password must be 12-72 bytes")
+	ErrWeakPassword       = errors.New("password must be 12-1024 bytes")
 	ErrInvalidEmail       = errors.New("invalid email")
 )
 
@@ -64,12 +63,12 @@ func (s *Service) Register(ctx context.Context, in Credentials) (TokenPair, erro
 		return TokenPair{}, err
 	}
 
-	hash, err := bcrypt.GenerateFromPassword([]byte(in.Password), bcrypt.DefaultCost)
+	hash, err := HashPassword(in.Password)
 	if err != nil {
 		return TokenPair{}, err
 	}
 
-	user, err := s.repo.CreateUser(ctx, email, string(hash))
+	user, err := s.repo.CreateUser(ctx, email, hash)
 	if err != nil {
 		return TokenPair{}, err
 	}
@@ -86,7 +85,8 @@ func (s *Service) Login(ctx context.Context, in Credentials) (TokenPair, error) 
 	if err != nil {
 		return TokenPair{}, ErrInvalidCredentials
 	}
-	if err := bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), []byte(in.Password)); err != nil {
+	ok, err := VerifyPassword(user.PasswordHash, in.Password)
+	if err != nil || !ok {
 		return TokenPair{}, ErrInvalidCredentials
 	}
 	return s.issueSession(ctx, user.ID)
@@ -211,7 +211,7 @@ func normalizeEmail(raw string) (string, error) {
 
 func validatePassword(password string) error {
 	size := len([]byte(password))
-	if size < 12 || size > 72 {
+	if size < 12 || size > 1024 {
 		return ErrWeakPassword
 	}
 	return nil
