@@ -94,78 +94,6 @@ paths:
           $ref: "#/components/responses/Unauthorized"
         "429":
           $ref: "#/components/responses/TooManyRequests"
-  /v1/auth/register:
-    post:
-      tags: [auth]
-      security: []
-      operationId: registerUser
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: "#/components/schemas/AuthCredentials"
-      responses:
-        "201":
-          description: Account created and session issued
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/TokenPair"
-        "400":
-          $ref: "#/components/responses/BadRequest"
-        "409":
-          $ref: "#/components/responses/Conflict"
-        "429":
-          $ref: "#/components/responses/TooManyRequests"
-  /v1/auth/login:
-    post:
-      tags: [auth]
-      security: []
-      operationId: loginUser
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: "#/components/schemas/AuthCredentials"
-      responses:
-        "200":
-          description: Session issued
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/TokenPair"
-        "400":
-          $ref: "#/components/responses/BadRequest"
-        "401":
-          $ref: "#/components/responses/Unauthorized"
-        "429":
-          $ref: "#/components/responses/TooManyRequests"
-  /v1/auth/refresh:
-    post:
-      tags: [auth]
-      security: []
-      operationId: refreshSession
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: "#/components/schemas/RefreshTokenRequest"
-      responses:
-        "200":
-          description: Rotated session issued
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/TokenPair"
-        "400":
-          $ref: "#/components/responses/BadRequest"
-        "401":
-          $ref: "#/components/responses/Unauthorized"
-        "429":
-          $ref: "#/components/responses/TooManyRequests"
   /v1/devices:
     get:
       tags: [devices]
@@ -390,7 +318,7 @@ components:
         application/json:
           schema: { $ref: "#/components/schemas/APIError" }
     Conflict:
-      description: Invalid state transition
+      description: Request conflicts with current resource state
       content:
         application/json:
           schema: { $ref: "#/components/schemas/APIError" }
@@ -402,10 +330,11 @@ components:
         email:
           type: string
           format: email
+          maxLength: 320
         password:
           type: string
           minLength: 12
-          maxLength: 72
+          maxLength: 1024
     RefreshRequest:
       type: object
       required: [refreshToken]
@@ -430,33 +359,6 @@ components:
       required: [status]
       properties:
         status: { type: string, const: ok }
-    AuthCredentials:
-      type: object
-      required: [email, password]
-      properties:
-        email:
-          type: string
-          format: email
-          maxLength: 320
-        password:
-          type: string
-          minLength: 12
-          maxLength: 1024
-    RefreshTokenRequest:
-      type: object
-      required: [refreshToken]
-      properties:
-        refreshToken:
-          type: string
-          minLength: 32
-    TokenPair:
-      type: object
-      required: [accessToken, refreshToken, tokenType, expiresInSeconds]
-      properties:
-        accessToken: { type: string }
-        refreshToken: { type: string }
-        tokenType: { type: string, const: Bearer }
-        expiresInSeconds: { type: integer, format: int64, minimum: 1 }
     Device:
       type: object
       required: [id, name, platform, createdAt]
