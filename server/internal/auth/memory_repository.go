@@ -19,7 +19,6 @@ type MemoryRepository struct {
 	mu       sync.Mutex
 	users    map[string]User
 	refresh  map[string]*memoryRefresh
-	nextUser int
 }
 
 func NewMemoryRepository() *MemoryRepository {
@@ -35,9 +34,12 @@ func (r *MemoryRepository) CreateUser(_ context.Context, email, passwordHash str
 	if _, exists := r.users[email]; exists {
 		return User{}, ErrEmailTaken
 	}
-	r.nextUser++
+	id, err := randomHex(16)
+	if err != nil {
+		return User{}, err
+	}
 	user := User{
-		ID:           "usr_memory_" + time.Now().UTC().Format("150405.000000000"),
+		ID:           "usr_memory_" + id,
 		Email:        email,
 		PasswordHash: passwordHash,
 		CreatedAt:    time.Now().UTC(),
