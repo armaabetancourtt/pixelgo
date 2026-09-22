@@ -24,10 +24,15 @@ type RegisterInput struct {
 	PushToken string `json:"pushToken"`
 }
 
+type PushTokenInput struct {
+	PushToken string `json:"pushToken"`
+}
+
 type Repository interface {
 	Create(context.Context, Device) (Device, error)
 	List(context.Context) ([]Device, error)
 	Get(context.Context, string) (Device, error)
+	UpdatePushToken(context.Context, string, string) (Device, error)
 	Delete(context.Context, string) error
 }
 
@@ -68,6 +73,17 @@ func (s *Service) List(ctx context.Context) ([]Device, error) {
 
 func (s *Service) Get(ctx context.Context, id string) (Device, error) {
 	return s.repo.Get(ctx, id)
+}
+
+func (s *Service) UpdatePushToken(
+	ctx context.Context,
+	id string,
+	token string,
+) (Device, error) {
+	if id == "" || len(token) > 4096 {
+		return Device{}, errors.New("invalid push token")
+	}
+	return s.repo.UpdatePushToken(ctx, id, token)
 }
 
 func (s *Service) Delete(ctx context.Context, id string) error {
