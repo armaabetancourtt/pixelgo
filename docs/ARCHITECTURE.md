@@ -23,8 +23,10 @@ flowchart LR
 
     API --> PG[(PostgreSQL)]
     API --> REDIS[(Redis)]
-    API --> FILES[Signed File Boundary]
-    FILES --> OBJ[(S3 / MinIO adapter)]
+    API --> FILES[Presigned Object Boundary]
+    IOS -->|direct PUT / GET| OBJ[(S3 / MinIO)]
+    AND -->|direct PUT / GET| OBJ
+    FILES --> OBJ
     RT <--> REDIS
 
     CONTRACT[OpenAPI] -. compatibility .-> IOS
@@ -95,15 +97,19 @@ The design intentionally uses different failure policies:
 - idempotency fails closed because duplicate writes risk consistency;
 - rate limiting fails open because it is an abuse-control layer.
 
-## File boundary
+## Object-storage boundary
 
-The current local adapter creates expiring HMAC-signed upload/download capability URLs.
+When `OBJECT_STORAGE_ENDPOINT` is configured, the file service uses an S3-compatible adapter. The API presigns PUT/GET capabilities and payload bytes move directly between native clients and object storage.
 
-The upload path verifies exact byte count and SHA-256 before the transfer can become ready.
+The presigned PUT binds `X-Amz-Meta-Sha256` into the SigV4 signature. After upload, `POST /uploaded` causes the transfer domain to `HEAD` the object and verify:
 
-The interface is intentionally isolated from the transfer domain so a direct S3-compatible adapter can replace it later.
+- the object exists;
+- exact byte size matches transfer metadata;
+- signed SHA-256 metadata matches the declared checksum.
 
-Signed URLs are transient credentials and are not stored in PostgreSQL.
+Only then can the transfer transition to `ready`.
+
+When object storage is absent, a local HMAC-signed in-memory adapter remains available for isolated development/tests. Signed URLs are transient credentials and are not stored in PostgreSQL.
 
 ## Realtime path
 
@@ -131,14 +137,16 @@ A device registration is durable. Presence is an observation with expiry.
 sequenceDiagram
     participant S as Sender
     participant API as API
-    participant F as File Boundary
+    participant F as S3 / MinIO
     participant R as Redis / Realtime
     participant D as Destination
 
     S->>API: POST /v1/transfers + Idempotency-Key
     API-->>S: transfer + signed upload URL
-    S->>F: PUT payload bytes
+    S->>F: presigned PUT + SHA-256 metadata
     S->>API: POST /uploaded
+    API->>F: HEAD object
+    F-->>API: size + checksum metadata
     API->>R: transfer.ready
     R-->>D: realtime event
     D->>F: GET payload
@@ -168,8 +176,9 @@ Secure mobile storage
   ├── iOS Keychain
   └── Android Keystore-encrypted session
 
-File adapter
-  └── payload bytes
+Object storage
+  ├── payload bytes
+  └── signed checksum metadata
 ~~~
 
 ## Scaling path
