@@ -27,7 +27,10 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import com.armaabetancourtt.pixelgo.model.PixelDevice
+import com.armaabetancourtt.pixelgo.model.Transfer
 import com.armaabetancourtt.pixelgo.network.ApiClient
+import kotlin.math.roundToInt
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -46,24 +49,43 @@ class MainActivity : ComponentActivity() {
 private fun PixelGoHome() {
     val api = remember { ApiClient(BuildConfig.API_BASE_URL) }
     var status by remember { mutableStateOf("Connecting…") }
+    var devices by remember { mutableStateOf<List<PixelDevice>>(emptyList()) }
+    var transfers by remember { mutableStateOf<List<Transfer>>(emptyList()) }
 
     LaunchedEffect(Unit) {
-        status = runCatching { api.health() }.fold(
-            onSuccess = { "API online" },
-            onFailure = { "Local API unavailable" }
+        runCatching {
+            api.health()
+            devices = api.listDevices()
+            transfers = api.listTransfers()
+        }.fold(
+            onSuccess = { status = "API online" },
+            onFailure = { status = "Local API unavailable" }
         )
     }
 
     LazyColumn(
-        modifier = Modifier.fillMaxSize().padding(horizontal = 24.dp),
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(horizontal = 24.dp),
         verticalArrangement = Arrangement.spacedBy(14.dp)
     ) {
         item {
             Spacer(Modifier.height(28.dp))
-            Text("PIXEL GO", style = MaterialTheme.typography.headlineLarge, fontWeight = FontWeight.Black)
-            Text("Native cross-device sharing.", color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Text(
+                "PIXEL GO",
+                style = MaterialTheme.typography.headlineLarge,
+                fontWeight = FontWeight.Black
+            )
+            Text(
+                "Native cross-device sharing.",
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
             Spacer(Modifier.height(8.dp))
-            Text(status, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Text(
+                status,
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
         }
 
         item {
@@ -71,21 +93,54 @@ private fun PixelGoHome() {
             Text("YOUR DEVICES", style = MaterialTheme.typography.labelLarge)
         }
 
-        items(listOf("Armando's iPhone" to "iOS", "Pixel 10" to "ANDROID")) { (name, platform) ->
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                Column {
-                    Text(name, fontWeight = FontWeight.SemiBold)
-                    Text(platform, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        if (devices.isEmpty()) {
+            item {
+                Text(
+                    "No devices registered yet",
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        } else {
+            items(devices, key = { it.id }) { device ->
+                Row(
+                    Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Column {
+                        Text(device.name, fontWeight = FontWeight.SemiBold)
+                        Text(
+                            device.platform.uppercase(),
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    Text("Registered", style = MaterialTheme.typography.labelMedium)
                 }
-                Text("Online", style = MaterialTheme.typography.labelMedium)
             }
         }
 
         item {
             HorizontalDivider()
             Text("RECENT", style = MaterialTheme.typography.labelLarge)
-            TransferRow("IMG_2048.jpg", "12.4 MB · Delivered")
-            TransferRow("github.com/...", "Link · Delivered")
+        }
+
+        if (transfers.isEmpty()) {
+            item {
+                Text(
+                    "Nothing sent yet",
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        } else {
+            items(transfers, key = { it.id }) { transfer ->
+                TransferRow(
+                    title = transfer.displayName ?: transfer.kind.replaceFirstChar { it.uppercase() },
+                    detail = "${formatBytes(transfer.sizeBytes)} · ${transfer.status}"
+                )
+            }
+        }
+
+        item {
             Spacer(Modifier.height(16.dp))
             Button(onClick = {}, modifier = Modifier.fillMaxWidth()) {
                 Text("+   SEND")
@@ -97,8 +152,24 @@ private fun PixelGoHome() {
 
 @Composable
 private fun TransferRow(title: String, detail: String) {
-    Column(Modifier.fillMaxWidth().padding(vertical = 8.dp)) {
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .padding(vertical = 8.dp)
+    ) {
         Text(title, fontWeight = FontWeight.SemiBold)
-        Text(detail, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Text(
+            detail,
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
     }
+}
+
+private fun formatBytes(bytes: Long): String {
+    if (bytes < 1_024) return "$bytes B"
+    val kilobytes = bytes / 1_024.0
+    if (kilobytes < 1_024) return "${(kilobytes * 10).roundToInt() / 10.0} KB"
+    val megabytes = kilobytes / 1_024.0
+    return "${(megabytes * 10).roundToInt() / 10.0} MB"
 }
