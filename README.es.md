@@ -279,6 +279,9 @@ Implementado:
 - coalescing de refresh concurrente;
 - sesión en Keychain;
 - devices/transfers/presence reales;
+- PhotosPicker + fileImporter nativos;
+- upload binario directo a S3/MinIO con presigned PUT;
+- download verificado y guardado local antes de marcar Delivered;
 - BackgroundTasks;
 - XCTest + contract tests;
 - XcodeGen.
@@ -295,6 +298,9 @@ Implementado:
 - Mutex para refresh concurrente;
 - AES-GCM + Android Keystore;
 - devices/transfers/presence reales;
+- Photo Picker + document picker nativos;
+- upload binario directo a S3/MinIO con presigned PUT;
+- download verificado + guardado con Storage Access Framework antes de Delivered;
 - WorkManager;
 - Room boundary;
 - FCM boundary;
@@ -349,6 +355,8 @@ El E2E corre con auth obligatorio, PostgreSQL, Redis y MinIO reales, y prueba:
 - checksum metadata firmada + HEAD verification;
 - size + SHA-256 en destino;
 - fallback signed in-memory local;
+- selección nativa de archivos/fotos en iOS y Android;
+- receive binario verificado + guardado local antes de Delivered;
 - retries cross-replica;
 - E2E autenticado;
 - CI multiplataforma;
@@ -360,8 +368,8 @@ El E2E corre con auth obligatorio, PostgreSQL, Redis y MinIO reales, y prueba:
 
 - lifecycle/retention de objetos, quotas y hardening de bucket policy;
 - APNs / FCM reales;
-- UX completa de SEND para archivos/fotos + background upload;
-- auto-download en background;
+- upload/resume en background para payloads grandes;
+- auto-download en background y política de guardado;
 - E2EE de contenido;
 - E2E físico iPhone → Android;
 - TestFlight / Play con credenciales reales.
