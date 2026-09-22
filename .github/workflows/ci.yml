@@ -9,10 +9,10 @@ permissions:
   contents: read
 
 concurrency:
-  # Push events can be delivered out of order. Keying by commit keeps an older
-  # delayed run from cancelling validation for a newer repository state.
-  group: ci-${{ github.workflow }}-${{ github.sha }}
-  cancel-in-progress: false
+  # Only the newest validation for a branch/PR is useful. Cancel stale work so
+  # rapid commits do not create a long runner queue.
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 
 jobs:
   workflows:
