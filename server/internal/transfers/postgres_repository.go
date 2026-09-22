@@ -94,7 +94,7 @@ func (r *PostgresRepository) List(ctx context.Context) ([]Transfer, error) {
 	}
 	defer rows.Close()
 
-	var out []Transfer
+	out := make([]Transfer, 0)
 	for rows.Next() {
 		t, err := scanTransfer(rows)
 		if err != nil {
