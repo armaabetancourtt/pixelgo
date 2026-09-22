@@ -11,6 +11,7 @@ import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
+import java.io.InputStream
 import java.net.HttpURLConnection
 import java.net.URL
 import java.security.MessageDigest
@@ -162,6 +163,72 @@ class ApiClient(
             payload = payload,
             contentType = contentType,
             checksum = checksum
+        )
+
+        return parseTransfer(
+            JSONObject(
+                authenticatedRequest(
+                    method = "POST",
+                    path = "/v1/transfers/" + created.id + "/uploaded",
+                    headers = mapOf(
+                        "Idempotency-Key" to
+                            "transfer-uploaded-" + created.id
+                    )
+                )
+            )
+        )
+    }
+
+    suspend fun sendStream(
+        openStream: () -> InputStream,
+        kind: String,
+        displayName: String,
+        contentType: String,
+        sourceDeviceId: String,
+        destinationDeviceId: String
+    ): Transfer {
+        require(kind in setOf("file", "photo")) {
+            "Stream transfer kind must be file or photo."
+        }
+
+        val metadata = withContext(Dispatchers.IO) {
+            inspectStream(openStream)
+        }
+
+        val createdBody = JSONObject()
+            .put("sourceDeviceId", sourceDeviceId)
+            .put("destinationDeviceId", destinationDeviceId)
+            .put("kind", kind)
+            .put("displayName", displayName.take(255))
+            .put("contentType", contentType.take(120))
+            .put("sizeBytes", metadata.sizeBytes)
+            .put("sha256", metadata.sha256)
+            .toString()
+
+        val createKey = "transfer-create-" +
+            UUID.randomUUID().toString().lowercase()
+
+        val created = parseTransfer(
+            JSONObject(
+                authenticatedRequest(
+                    method = "POST",
+                    path = "/v1/transfers",
+                    body = createdBody,
+                    headers = mapOf("Idempotency-Key" to createKey)
+                )
+            )
+        )
+
+        val uploadUrl = created.uploadUrl ?: throw InvalidTransferException(
+            "Server did not return an upload URL."
+        )
+
+        uploadSignedStream(
+            url = uploadUrl,
+            openStream = openStream,
+            contentType = contentType,
+            checksum = metadata.sha256,
+            sizeBytes = metadata.sizeBytes
         )
 
         return parseTransfer(
@@ -377,6 +444,67 @@ class ApiClient(
             connection.setRequestProperty("X-Amz-Meta-Sha256", checksum)
             connection.setFixedLengthStreamingMode(payload.size)
             connection.outputStream.use { it.write(payload) }
+
+            val status = connection.responseCode
+            if (status !in 200..299) {
+                throw ApiException(status, readResponse(connection, status))
+            }
+        } finally {
+            connection.disconnect()
+        }
+    }
+
+    private data class StreamMetadata(
+        val sizeBytes: Long,
+        val sha256: String
+    )
+
+    private fun inspectStream(
+        openStream: () -> InputStream
+    ): StreamMetadata {
+        val digest = MessageDigest.getInstance("SHA-256")
+        var total = 0L
+        val buffer = ByteArray(64 * 1024)
+
+        openStream().use { input ->
+            while (true) {
+                val count = input.read(buffer)
+                if (count < 0) break
+                if (count == 0) continue
+                digest.update(buffer, 0, count)
+                total += count.toLong()
+            }
+        }
+
+        return StreamMetadata(
+            sizeBytes = total,
+            sha256 = digest.digest()
+                .joinToString("") { byte -> "%02x".format(byte) }
+        )
+    }
+
+    private suspend fun uploadSignedStream(
+        url: String,
+        openStream: () -> InputStream,
+        contentType: String,
+        checksum: String,
+        sizeBytes: Long
+    ) = withContext(Dispatchers.IO) {
+        val connection = URL(url).openConnection() as HttpURLConnection
+        try {
+            connection.requestMethod = "PUT"
+            connection.doOutput = true
+            connection.connectTimeout = 10_000
+            connection.readTimeout = 10_000
+            connection.setRequestProperty("Content-Type", contentType)
+            connection.setRequestProperty("X-Amz-Meta-Sha256", checksum)
+            connection.setFixedLengthStreamingMode(sizeBytes)
+
+            openStream().use { input ->
+                connection.outputStream.use { output ->
+                    input.copyTo(output, 64 * 1024)
+                }
+            }
 
             val status = connection.responseCode
             if (status !in 200..299) {
