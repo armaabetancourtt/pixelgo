@@ -176,29 +176,12 @@ actor APIClient {
             transfer.destinationDeviceId == destinationDeviceID &&
             transfer.status == .ready &&
             [.text, .link, .clipboard].contains(transfer.kind) {
-            guard let downloadURL = transfer.downloadUrl else {
-                continue
-            }
-
-            let (data, response) = try await session.data(from: downloadURL)
-            guard
-                let http = response as? HTTPURLResponse,
-                (200..<300).contains(http.statusCode)
-            else {
-                throw APIError.invalidResponse
-            }
-
-            guard sha256Hex(data).caseInsensitiveCompare(transfer.sha256) == .orderedSame else {
-                throw APIError.checksumMismatch
-            }
+            let data = try await downloadPayload(for: transfer)
             guard let text = String(data: data, encoding: .utf8) else {
                 throw APIError.invalidResponse
             }
 
-            let _: Transfer = try await authenticatedMutation(
-                "/v1/transfers/\(transfer.id)/complete",
-                idempotencyKey: "transfer-complete-\(transfer.id)"
-            )
+            _ = try await completeTransfer(transfer.id)
 
             received.append(
                 ReceivedTextItem(
@@ -211,6 +194,36 @@ actor APIClient {
         }
 
         return received
+    }
+
+    func downloadPayload(for transfer: Transfer) async throws -> Data {
+        guard let downloadURL = transfer.downloadUrl else {
+            throw APIError.invalidResponse
+        }
+
+        let (data, response) = try await session.data(from: downloadURL)
+        guard
+            let http = response as? HTTPURLResponse,
+            (200..<300).contains(http.statusCode)
+        else {
+            throw APIError.invalidResponse
+        }
+
+        guard sha256Hex(data).caseInsensitiveCompare(transfer.sha256) == .orderedSame else {
+            throw APIError.checksumMismatch
+        }
+        guard Int64(data.count) == transfer.sizeBytes else {
+            throw APIError.checksumMismatch
+        }
+
+        return data
+    }
+
+    func completeTransfer(_ transferID: String) async throws -> Transfer {
+        try await authenticatedMutation(
+            "/v1/transfers/\(transferID)/complete",
+            idempotencyKey: "transfer-complete-\(transferID)"
+        )
     }
 
     func openEvents(deviceID: String) async throws {
