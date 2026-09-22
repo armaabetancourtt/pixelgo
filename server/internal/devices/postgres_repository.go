@@ -2,7 +2,10 @@ package devices
 
 import (
 	"context"
+	"errors"
 
+	"github.com/armaabetancourtt/pixelgo/server/internal/auth"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -15,11 +18,13 @@ func NewPostgresRepository(db *pgxpool.Pool) *PostgresRepository {
 }
 
 func (r *PostgresRepository) Create(ctx context.Context, device Device) (Device, error) {
+	userID := auth.UserID(ctx)
 	_, err := r.db.Exec(
 		ctx,
-		`INSERT INTO devices (id, name, platform, push_token, created_at)
-		 VALUES ($1, $2, $3, NULLIF($4, ''), $5)`,
+		`INSERT INTO devices (id, user_id, name, platform, push_token, created_at)
+		 VALUES ($1, NULLIF($2, '')::uuid, $3, $4, NULLIF($5, ''), $6)`,
 		device.ID,
+		userID,
 		device.Name,
 		device.Platform,
 		device.PushToken,
@@ -32,12 +37,18 @@ func (r *PostgresRepository) Create(ctx context.Context, device Device) (Device,
 }
 
 func (r *PostgresRepository) List(ctx context.Context) ([]Device, error) {
-	rows, err := r.db.Query(
-		ctx,
-		`SELECT id, name, platform, COALESCE(push_token, ''), created_at
-		 FROM devices
-		 ORDER BY created_at ASC`,
-	)
+	userID := auth.UserID(ctx)
+
+	query := `SELECT id, name, platform, COALESCE(push_token, ''), created_at
+	          FROM devices`
+	args := []any{}
+	if userID != "" {
+		query += ` WHERE user_id = $1::uuid`
+		args = append(args, userID)
+	}
+	query += ` ORDER BY created_at ASC`
+
+	rows, err := r.db.Query(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -63,8 +74,43 @@ func (r *PostgresRepository) List(ctx context.Context) ([]Device, error) {
 	return out, nil
 }
 
+func (r *PostgresRepository) Get(ctx context.Context, id string) (Device, error) {
+	userID := auth.UserID(ctx)
+
+	query := `SELECT id, name, platform, COALESCE(push_token, ''), created_at
+	          FROM devices
+	          WHERE id = $1`
+	args := []any{id}
+	if userID != "" {
+		query += ` AND user_id = $2::uuid`
+		args = append(args, userID)
+	}
+
+	var device Device
+	err := r.db.QueryRow(ctx, query, args...).Scan(
+		&device.ID,
+		&device.Name,
+		&device.Platform,
+		&device.PushToken,
+		&device.CreatedAt,
+	)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Device{}, ErrNotFound
+	}
+	return device, err
+}
+
 func (r *PostgresRepository) Delete(ctx context.Context, id string) error {
-	tag, err := r.db.Exec(ctx, `DELETE FROM devices WHERE id = $1`, id)
+	userID := auth.UserID(ctx)
+
+	query := `DELETE FROM devices WHERE id = $1`
+	args := []any{id}
+	if userID != "" {
+		query += ` AND user_id = $2::uuid`
+		args = append(args, userID)
+	}
+
+	tag, err := r.db.Exec(ctx, query, args...)
 	if err != nil {
 		return err
 	}
