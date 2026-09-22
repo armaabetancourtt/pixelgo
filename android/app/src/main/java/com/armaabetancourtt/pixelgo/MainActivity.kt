@@ -114,7 +114,15 @@ private fun PixelGoHome() {
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                     }
-                    Text("Registered", style = MaterialTheme.typography.labelMedium)
+                    Text(
+                        if (device.online) "Online" else "Offline",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = if (device.online) {
+                            MaterialTheme.colorScheme.primary
+                        } else {
+                            MaterialTheme.colorScheme.onSurfaceVariant
+                        }
+                    )
                 }
             }
         }
