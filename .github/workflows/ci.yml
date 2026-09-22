@@ -67,6 +67,13 @@ jobs:
       PIXELGO_AUTO_MIGRATE: "true"
       PIXELGO_REQUIRE_AUTH: "true"
       PIXELGO_JWT_SECRET: "ci-only-jwt-secret-0123456789abcdef"
+      OBJECT_STORAGE_ENDPOINT: http://127.0.0.1:9000
+      OBJECT_STORAGE_BUCKET: pixelgo
+      OBJECT_STORAGE_ACCESS_KEY: pixelgo
+      OBJECT_STORAGE_SECRET_KEY: pixelgo-ci-secret
+      OBJECT_STORAGE_REGION: us-east-1
+      OBJECT_STORAGE_PREFIX: transfers
+      OBJECT_STORAGE_AUTO_CREATE: "true"
     defaults:
       run:
         working-directory: server
@@ -77,6 +84,26 @@ jobs:
         with:
           go-version: "1.25.x"
           cache: false
+
+      - name: Start MinIO object storage
+        shell: bash
+        run: |
+          docker run --rm -d \
+            --name pixelgo-minio \
+            -p 9000:9000 \
+            -e MINIO_ROOT_USER=pixelgo \
+            -e MINIO_ROOT_PASSWORD=pixelgo-ci-secret \
+            minio/minio:latest server /data
+
+          for i in {1..30}; do
+            if curl --fail --silent http://127.0.0.1:9000/minio/health/live >/dev/null; then
+              exit 0
+            fi
+            sleep 1
+          done
+
+          docker logs pixelgo-minio
+          exit 1
 
       - name: Resolve module graph
         run: |
@@ -159,7 +186,7 @@ jobs:
           assert len(devices) == 2, devices
           assert len(transfers) >= 1, transfers
           assert any(item["status"] == "completed" for item in transfers), transfers
-          print("PASS: authenticated PostgreSQL state survives API restart")
+          print("PASS: authenticated PostgreSQL + MinIO state survives API restart")
           PY
 
   android:
