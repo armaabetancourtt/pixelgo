@@ -70,7 +70,6 @@ final class PixelGoContractsTests: XCTestCase {
         let pair = try JSONDecoder().decode(TokenPair.self, from: json)
 
         XCTAssertEqual(pair.userId, "usr_123")
-        XCTAssertEqual(pair.userId, "user_123")
         XCTAssertEqual(pair.tokenType, "Bearer")
         XCTAssertEqual(pair.expiresInSeconds, 900)
         XCTAssertEqual(pair.accessToken, "header.payload.signature")
