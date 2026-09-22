@@ -1,0 +1,10 @@
+extends:
+  - minimal
+
+rules:
+  spec: error
+  no-unresolved-refs: error
+  no-ambiguous-paths: error
+  path-declaration-must-exist: error
+  operation-operationId-unique: error
+  no-identical-paths: error
