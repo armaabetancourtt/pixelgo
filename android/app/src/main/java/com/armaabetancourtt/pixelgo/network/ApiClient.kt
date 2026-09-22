@@ -72,7 +72,12 @@ class ApiClient(
                 .toString(),
             headers = mapOf("Idempotency-Key" to idempotencyKey)
         )
-        val device = parseDevice(JSONObject(response))
+        val item = JSONObject(response)
+        val device = PixelDevice(
+            id = item.getString("id"),
+            name = item.getString("name"),
+            platform = item.getString("platform")
+        )
         sessionStore.saveDeviceId(session.userId, device.id)
         return device
     }
@@ -87,34 +92,35 @@ class ApiClient(
         val checksum = sha256Hex(payload)
         val contentType = "text/plain; charset=utf-8"
 
+        val createdBody = JSONObject()
+            .put("sourceDeviceId", sourceDeviceId)
+            .put("destinationDeviceId", destinationDeviceId)
+            .put("kind", kind)
+            .put("displayName", if (kind == "link") "Link" else "Text")
+            .put("contentType", contentType)
+            .put("sizeBytes", payload.size)
+            .put("sha256", checksum)
+            .toString()
+
+        val createKey = "transfer-create-" +
+            UUID.randomUUID().toString().lowercase()
+
         val created = parseTransfer(
             JSONObject(
                 authenticatedRequest(
                     method = "POST",
                     path = "/v1/transfers",
-                    body = JSONObject()
-                        .put("sourceDeviceId", sourceDeviceId)
-                        .put("destinationDeviceId", destinationDeviceId)
-                        .put("kind", kind)
-                        .put("displayName", if (kind == "link") "Link" else "Text")
-                        .put("contentType", contentType)
-                        .put("sizeBytes", payload.size)
-                        .put("sha256", checksum)
-                        .toString(),
-                    headers = mapOf(
-                        "Idempotency-Key" to (
-                            "transfer-create-" +
-                                UUID.randomUUID().toString().lowercase()
-                        )
-                    )
+                    body = createdBody,
+                    headers = mapOf("Idempotency-Key" to createKey)
                 )
             )
         )
 
-        val uploadUrl = created.uploadUrl
-            ?: throw ApiException(500, "missing signed upload URL")
+        val uploadUrl = created.uploadUrl ?: throw InvalidTransferException(
+            "Server did not return an upload URL."
+        )
         uploadSigned(
-            rawUrl = uploadUrl,
+            url = uploadUrl,
             payload = payload,
             contentType = contentType
         )
@@ -123,9 +129,10 @@ class ApiClient(
             JSONObject(
                 authenticatedRequest(
                     method = "POST",
-                    path = "/v1/transfers/${created.id}/uploaded",
+                    path = "/v1/transfers/" + created.id + "/uploaded",
                     headers = mapOf(
-                        "Idempotency-Key" to "transfer-uploaded-${created.id}"
+                        "Idempotency-Key" to
+                            "transfer-uploaded-" + created.id
                     )
                 )
             )
@@ -148,17 +155,18 @@ class ApiClient(
 
             val downloadUrl = transfer.downloadUrl ?: continue
             val payload = downloadSigned(downloadUrl)
-
             if (!sha256Hex(payload).equals(transfer.sha256, ignoreCase = true)) {
                 throw ChecksumMismatchException()
             }
 
             val text = payload.toString(Charsets.UTF_8)
+
             authenticatedRequest(
                 method = "POST",
-                path = "/v1/transfers/${transfer.id}/complete",
+                path = "/v1/transfers/" + transfer.id + "/complete",
                 headers = mapOf(
-                    "Idempotency-Key" to "transfer-complete-${transfer.id}"
+                    "Idempotency-Key" to
+                        "transfer-complete-" + transfer.id
                 )
             )
 
@@ -176,13 +184,20 @@ class ApiClient(
         val array = JSONArray(authenticatedGet("/v1/devices"))
         return buildList {
             for (index in 0 until array.length()) {
-                add(parseDevice(array.getJSONObject(index)))
+                val item = array.getJSONObject(index)
+                add(
+                    PixelDevice(
+                        id = item.getString("id"),
+                        name = item.getString("name"),
+                        platform = item.getString("platform")
+                    )
+                )
             }
         }
     }
 
     suspend fun isDeviceOnline(deviceId: String): Boolean {
-        val item = JSONObject(authenticatedGet("/v1/presence/$deviceId"))
+        val item = JSONObject(authenticatedGet("/v1/presence/" + deviceId))
         return item.getBoolean("online")
     }
 
@@ -195,14 +210,6 @@ class ApiClient(
         }
     }
 
-    private fun parseDevice(item: JSONObject): PixelDevice {
-        return PixelDevice(
-            id = item.getString("id"),
-            name = item.getString("name"),
-            platform = item.getString("platform")
-        )
-    }
-
     private fun parseTransfer(item: JSONObject): Transfer {
         return Transfer(
             id = item.getString("id"),
@@ -210,18 +217,17 @@ class ApiClient(
             destinationDeviceId = item.getString("destinationDeviceId"),
             kind = item.getString("kind"),
             status = item.getString("status"),
-            displayName = item.optionalString("displayName"),
-            contentType = item.optionalString("contentType"),
+            displayName = item.optString("displayName")
+                .takeIf { it.isNotBlank() },
+            contentType = item.optString("contentType")
+                .takeIf { it.isNotBlank() },
             sizeBytes = item.getLong("sizeBytes"),
             sha256 = item.getString("sha256"),
-            uploadUrl = item.optionalString("uploadUrl"),
-            downloadUrl = item.optionalString("downloadUrl")
+            uploadUrl = item.optString("uploadUrl")
+                .takeIf { it.isNotBlank() },
+            downloadUrl = item.optString("downloadUrl")
+                .takeIf { it.isNotBlank() }
         )
-    }
-
-    private fun JSONObject.optionalString(name: String): String? {
-        if (!has(name) || isNull(name)) return null
-        return getString(name).takeIf { it.isNotBlank() }
     }
 
     private suspend fun authenticatedGet(path: String): String {
@@ -300,50 +306,39 @@ class ApiClient(
     }
 
     private suspend fun uploadSigned(
-        rawUrl: String,
+        url: String,
         payload: ByteArray,
         contentType: String
     ) = withContext(Dispatchers.IO) {
-        val connection = resolveSignedUrl(rawUrl)
-            .openConnection() as HttpURLConnection
+        val connection = URL(url).openConnection() as HttpURLConnection
         try {
             connection.requestMethod = "PUT"
             connection.doOutput = true
-            connection.connectTimeout = 10_000
-            connection.readTimeout = 10_000
+            connection.connectTimeout = 5_000
+            connection.readTimeout = 5_000
             connection.setRequestProperty("Content-Type", contentType)
             connection.setFixedLengthStreamingMode(payload.size)
             connection.outputStream.use { it.write(payload) }
 
             val status = connection.responseCode
             if (status !in 200..299) {
-                val error = connection.errorStream
-                    ?.bufferedReader()
-                    ?.use { it.readText() }
-                    .orEmpty()
-                throw ApiException(status, error)
+                throw ApiException(status, readResponse(connection, status))
             }
         } finally {
             connection.disconnect()
         }
     }
 
-    private suspend fun downloadSigned(rawUrl: String): ByteArray =
+    private suspend fun downloadSigned(url: String): ByteArray =
         withContext(Dispatchers.IO) {
-            val connection = resolveSignedUrl(rawUrl)
-                .openConnection() as HttpURLConnection
+            val connection = URL(url).openConnection() as HttpURLConnection
             try {
                 connection.requestMethod = "GET"
-                connection.connectTimeout = 10_000
-                connection.readTimeout = 10_000
-
+                connection.connectTimeout = 5_000
+                connection.readTimeout = 5_000
                 val status = connection.responseCode
                 if (status !in 200..299) {
-                    val error = connection.errorStream
-                        ?.bufferedReader()
-                        ?.use { it.readText() }
-                        .orEmpty()
-                    throw ApiException(status, error)
+                    throw ApiException(status, readResponse(connection, status))
                 }
                 connection.inputStream.use { it.readBytes() }
             } finally {
@@ -351,28 +346,12 @@ class ApiClient(
             }
         }
 
-    /**
-     * The development file adapter signs action/id/expiry rather than host.
-     * Android emulators reach the host machine through 10.0.2.2, while the
-     * backend's local signed URL may contain localhost. Preserve path/query
-     * and replace only the development host with the configured API host.
-     */
-    private fun resolveSignedUrl(rawUrl: String): URL {
-        val signed = URL(rawUrl)
-        if (signed.host != "localhost" && signed.host != "127.0.0.1") {
-            return signed
-        }
-
-        val api = URL(baseUrl)
-        val port = if (api.port >= 0) api.port else api.defaultPort
-        return URL(api.protocol, api.host, port, signed.file)
-    }
-
     private fun inferTextKind(value: String): String {
-        val protocol = runCatching {
-            URL(value.trim()).protocol.lowercase()
-        }.getOrNull()
-        return if (protocol == "http" || protocol == "https") {
+        val normalized = value.trim()
+        return if (
+            normalized.startsWith("https://", ignoreCase = true) ||
+            normalized.startsWith("http://", ignoreCase = true)
+        ) {
             "link"
         } else {
             "text"
@@ -382,9 +361,7 @@ class ApiClient(
     private fun sha256Hex(payload: ByteArray): String {
         return MessageDigest.getInstance("SHA-256")
             .digest(payload)
-            .joinToString("") {
-                "%02x".format(it.toInt() and 0xff)
-            }
+            .joinToString("") { byte -> "%02x".format(byte) }
     }
 
     private suspend fun execute(
@@ -407,7 +384,7 @@ class ApiClient(
             if (accessToken != null) {
                 connection.setRequestProperty(
                     "Authorization",
-                    "Bearer $accessToken"
+                    "Bearer " + accessToken
                 )
             }
             for ((key, value) in headers) {
@@ -426,20 +403,26 @@ class ApiClient(
             }
 
             val status = connection.responseCode
-            val stream = if (status in 200..299) {
-                connection.inputStream
-            } else {
-                connection.errorStream
-            }
-            val responseBody = stream
-                ?.bufferedReader()
-                ?.use { it.readText() }
-                .orEmpty()
-
+            val responseBody = readResponse(connection, status)
             HttpResult(status, responseBody)
         } finally {
             connection.disconnect()
         }
+    }
+
+    private fun readResponse(
+        connection: HttpURLConnection,
+        status: Int
+    ): String {
+        val stream = if (status in 200..299) {
+            connection.inputStream
+        } else {
+            connection.errorStream
+        }
+        return stream
+            ?.bufferedReader()
+            ?.use { it.readText() }
+            .orEmpty()
     }
 }
 
@@ -460,9 +443,9 @@ class ApiException(
     responseBody: String = ""
 ) : Exception(
     if (responseBody.isBlank()) {
-        "PIXEL GO API returned HTTP $statusCode"
+        "PIXEL GO API returned HTTP " + statusCode
     } else {
-        "PIXEL GO API returned HTTP $statusCode: $responseBody"
+        "PIXEL GO API returned HTTP " + statusCode + ": " + responseBody
     }
 )
 
@@ -474,3 +457,5 @@ class SessionExpiredException(
 
 class ChecksumMismatchException :
     Exception("The received payload failed SHA-256 verification.")
+
+class InvalidTransferException(message: String) : Exception(message)
