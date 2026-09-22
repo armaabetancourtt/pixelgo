@@ -14,7 +14,7 @@ type Device struct {
 	ID        string    `json:"id"`
 	Name      string    `json:"name"`
 	Platform  string    `json:"platform"`
-	PushToken string    `json:"pushToken,omitempty"`
+	PushToken string    `json:"-"`
 	CreatedAt time.Time `json:"createdAt"`
 }
 
