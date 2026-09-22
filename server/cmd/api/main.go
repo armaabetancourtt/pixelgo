@@ -51,6 +51,7 @@ func main() {
 
 	var presenceStore presence.Store = presence.NewMemoryStore()
 	var broker realtime.Broker
+	httpOptions := make([]httpapi.Option, 0, 2)
 
 	if redisURL := os.Getenv("REDIS_URL"); redisURL != "" {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -64,6 +65,7 @@ func main() {
 
 		presenceStore = presence.NewRedisStore(redisClient)
 		broker = realtime.NewRedisBroker(redisClient)
+		httpOptions = append(httpOptions, httpapi.WithRedisIdempotency(redisClient))
 		log.Printf("pixelgo ephemeral state: redis")
 	} else {
 		log.Printf("pixelgo ephemeral state: in-memory")
@@ -82,12 +84,13 @@ func main() {
 	fileService := files.NewService(baseURL, signingSecret, 10*time.Minute)
 	deviceService := devices.NewService(deviceRepo)
 	transferService := transfers.NewService(transferRepo, hub, fileService)
+	httpOptions = append(httpOptions, httpapi.WithPresence(presenceStore))
 	handler := httpapi.New(
 		deviceService,
 		transferService,
 		hub,
 		fileService,
-		httpapi.WithPresence(presenceStore),
+		httpOptions...,
 	)
 
 	server := &http.Server{
