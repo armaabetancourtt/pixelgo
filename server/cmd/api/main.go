@@ -7,7 +7,9 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"os/signal"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/armaabetancourtt/pixelgo/server/internal/auth"
@@ -28,6 +30,13 @@ func main() {
 	logger := newLogger()
 	slog.SetDefault(logger)
 	metrics := observability.NewMetrics()
+
+	lifecycleCtx, stopLifecycle := signal.NotifyContext(
+		context.Background(),
+		os.Interrupt,
+		syscall.SIGTERM,
+	)
+	defer stopLifecycle()
 
 	addr := env("PIXELGO_ADDR", ":8080")
 	baseURL := env("PIXELGO_PUBLIC_BASE_URL", "http://localhost:8080")
@@ -114,7 +123,7 @@ func main() {
 	}
 
 	hub := realtime.NewHub(hubOptions...)
-	hub.Start(context.Background())
+	hub.Start(lifecycleCtx)
 
 	var fileService *files.Service
 	if storageEndpoint := os.Getenv("OBJECT_STORAGE_ENDPOINT"); storageEndpoint != "" {
@@ -157,6 +166,10 @@ func main() {
 	if err != nil {
 		fatal(logger, "push configuration invalid", "error", err)
 	}
+	var (
+		cancelPushWorker context.CancelFunc
+		pushWorkerDone   chan struct{}
+	)
 	if notificationRepo != nil && pushRouter.Configured() {
 		worker := notifications.NewWorker(
 			notificationRepo,
@@ -166,7 +179,13 @@ func main() {
 			},
 			logger,
 		)
-		go worker.Run(context.Background())
+		workerCtx, cancelWorker := context.WithCancel(context.Background())
+		cancelPushWorker = cancelWorker
+		pushWorkerDone = make(chan struct{})
+		go func() {
+			defer close(pushWorkerDone)
+			worker.Run(workerCtx)
+		}()
 		logger.Info(
 			"push worker configured",
 			"apns", pushRouter.APNs != nil,
@@ -214,9 +233,46 @@ func main() {
 		"auth_required", requireAuth,
 		"readiness_checks", len(readinessChecks),
 	)
-	if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-		fatal(logger, "api server stopped unexpectedly", "error", err)
+
+	serverErr := make(chan error, 1)
+	go func() {
+		serverErr <- server.ListenAndServe()
+	}()
+
+	select {
+	case <-lifecycleCtx.Done():
+		logger.Info("shutdown requested")
+
+		// HTTP shutdown does not own upgraded WebSockets, so close realtime
+		// clients explicitly before draining normal requests.
+		hub.Close()
+
+		shutdownCtx, cancelShutdown := context.WithTimeout(
+			context.Background(),
+			10*time.Second,
+		)
+		if err := server.Shutdown(shutdownCtx); err != nil {
+			logger.Error("graceful HTTP shutdown failed", "error", err)
+			_ = server.Close()
+		}
+		cancelShutdown()
+
+	case err := <-serverErr:
+		if err != nil && err != http.ErrServerClosed {
+			fatal(logger, "api server stopped unexpectedly", "error", err)
+		}
 	}
+
+	if cancelPushWorker != nil {
+		cancelPushWorker()
+		select {
+		case <-pushWorkerDone:
+		case <-time.After(3 * time.Second):
+			logger.Warn("push worker did not stop before shutdown deadline")
+		}
+	}
+
+	logger.Info("pixelgo api stopped")
 }
 
 func env(key, fallback string) string {
