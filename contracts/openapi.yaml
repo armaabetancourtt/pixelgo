@@ -9,6 +9,7 @@ tags:
   - name: system
   - name: devices
   - name: transfers
+  - name: presence
 paths:
   /health:
     get:
@@ -63,6 +64,25 @@ paths:
           description: Device removed
         "404":
           $ref: "#/components/responses/NotFound"
+  /v1/presence/{deviceId}:
+    get:
+      tags: [presence]
+      operationId: getDevicePresence
+      parameters:
+        - $ref: "#/components/parameters/DeviceId"
+      responses:
+        "200":
+          description: Ephemeral reachability for a registered device
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DevicePresence"
+        "503":
+          description: Presence backend unavailable
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/APIError"
   /v1/transfers:
     get:
       tags: [transfers]
@@ -148,6 +168,12 @@ paths:
       tags: [system]
       operationId: connectEvents
       description: Upgrades to a WebSocket connection. Event payloads use RealtimeEvent.
+      parameters:
+        - name: deviceId
+          in: query
+          required: true
+          schema:
+            type: string
       responses:
         "101":
           description: Switching Protocols
@@ -203,6 +229,12 @@ components:
           enum: [ios, android]
         pushToken: { type: string }
         createdAt: { type: string, format: date-time }
+    DevicePresence:
+      type: object
+      required: [deviceId, online]
+      properties:
+        deviceId: { type: string }
+        online: { type: boolean }
     RegisterDeviceRequest:
       type: object
       required: [name, platform]
