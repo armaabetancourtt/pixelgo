@@ -615,7 +615,11 @@ private fun HomeScreen(
                         .padding(vertical = 6.dp)
                 ) {
                     Text(
-                        if (item.kind == "link") "LINK" else "TEXT",
+                        when (item.kind) {
+                            "link" -> "LINK"
+                            "clipboard" -> "CLIPBOARD"
+                            else -> "TEXT"
+                        },
                         style = MaterialTheme.typography.labelSmall,
                         fontWeight = FontWeight.Bold,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
@@ -822,6 +826,40 @@ private fun SendDialog(
                     modifier = Modifier.fillMaxWidth()
                 ) {
                     Text("SEND TEXT / LINK", fontWeight = FontWeight.Bold)
+                }
+
+                TextButton(
+                    onClick = {
+                        val clipboard = context.getSystemService(
+                            android.content.Context.CLIPBOARD_SERVICE
+                        ) as android.content.ClipboardManager
+                        val clip = clipboard.primaryClip
+                        val value = if (clip != null && clip.itemCount > 0) {
+                            clip.getItemAt(0)
+                                .coerceToText(context)
+                                ?.toString()
+                                ?.trim()
+                                .orEmpty()
+                        } else {
+                            ""
+                        }
+
+                        if (value.isBlank()) {
+                            pickerError = "Clipboard does not contain text."
+                        } else {
+                            onSendPayload(
+                                value.toByteArray(Charsets.UTF_8),
+                                "clipboard",
+                                "Clipboard",
+                                "text/plain; charset=utf-8",
+                                selectedDeviceId
+                            )
+                        }
+                    },
+                    enabled = selectedDeviceId.isNotEmpty(),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text("PASTE & SEND CLIPBOARD")
                 }
 
                 HorizontalDivider()
