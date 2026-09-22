@@ -14,6 +14,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.HorizontalDivider
@@ -76,9 +77,23 @@ private fun PixelGoApp(
 
     var devices by remember { mutableStateOf<List<PixelDevice>>(emptyList()) }
     var transfers by remember { mutableStateOf<List<Transfer>>(emptyList()) }
+    var receivedItems by remember {
+        mutableStateOf<List<ReceivedTextItem>>(emptyList())
+    }
     var onlineDeviceIds by remember { mutableStateOf<Set<String>>(emptySet()) }
-    var receivedItems by remember { mutableStateOf<List<ReceivedTextItem>>(emptyList()) }
     var localDeviceId by remember { mutableStateOf<String?>(null) }
+
+    suspend fun clearAuthenticatedState(message: String? = null) {
+        realtime.disconnect()
+        api.signOut()
+        localDeviceId = null
+        isAuthenticated = false
+        devices = emptyList()
+        transfers = emptyList()
+        receivedItems = emptyList()
+        onlineDeviceIds = emptySet()
+        errorMessage = message
+    }
 
     suspend fun reload() {
         if (!isAuthenticated) return
@@ -98,22 +113,13 @@ private fun PixelGoApp(
                         online += device.id
                     }
                 } catch (_: Exception) {
-                    // Presence is ephemeral. A temporary lookup failure should
-                    // not hide the durable device list.
+                    // Presence is ephemeral. Durable data should still render.
                 }
             }
             onlineDeviceIds = online
             errorMessage = null
         } catch (error: SessionExpiredException) {
-            realtime.disconnect()
-            api.signOut()
-            localDeviceId = null
-            isAuthenticated = false
-            devices = emptyList()
-            transfers = emptyList()
-            onlineDeviceIds = emptySet()
-            receivedItems = emptyList()
-            errorMessage = error.message
+            clearAuthenticatedState(error.message)
         } catch (error: Exception) {
             errorMessage = error.message ?: "Could not load PIXEL GO."
         } finally {
@@ -126,21 +132,16 @@ private fun PixelGoApp(
 
         try {
             val incoming = api.receiveReadyTextItems(destinationId)
-            if (incoming.isEmpty()) return
-
-            val knownIds = receivedItems.map { it.id }.toMutableSet()
-            val uniqueIncoming = incoming.filter { knownIds.add(it.id) }
-            if (uniqueIncoming.isNotEmpty()) {
-                receivedItems = uniqueIncoming + receivedItems
+            if (incoming.isNotEmpty()) {
+                val known = receivedItems.map { it.id }.toMutableSet()
+                receivedItems = (
+                    incoming.filter { known.add(it.id) } + receivedItems
+                )
             }
         } catch (error: SessionExpiredException) {
-            realtime.disconnect()
-            api.signOut()
-            localDeviceId = null
-            isAuthenticated = false
-            errorMessage = error.message
+            clearAuthenticatedState(error.message)
         } catch (error: Exception) {
-            errorMessage = error.message ?: "Could not receive pending items."
+            errorMessage = error.message ?: "Could not receive transfer."
         }
     }
 
@@ -149,12 +150,12 @@ private fun PixelGoApp(
             deviceId = deviceId,
             onEvent = { eventType ->
                 scope.launch {
-                    if (isAuthenticated) {
-                        if (eventType == "transfer.ready") {
-                            receivePendingItems()
-                        }
-                        reload()
+                    if (!isAuthenticated) return@launch
+
+                    if (eventType == "transfer.ready") {
+                        receivePendingItems()
                     }
+                    reload()
                 }
             },
             onDisconnected = {
@@ -164,8 +165,8 @@ private fun PixelGoApp(
                         return@launch
                     }
 
-                    // An authenticated REST call performs single-flight token
-                    // refresh if the WebSocket failed after access expiry.
+                    // REST refreshes the access token before the next
+                    // authenticated WebSocket handshake when necessary.
                     runCatching { api.listDevices() }
 
                     if (isAuthenticated && localDeviceId == deviceId) {
@@ -190,22 +191,40 @@ private fun PixelGoApp(
             )
             localDeviceId = device.id
 
-            // Durable recovery path: process ready transfers even if the
-            // realtime event was missed while Android was suspended.
+            // Durable state repairs anything realtime may have missed while
+            // the OS suspended or killed the process.
             receivePendingItems()
-
             connectRealtime(device.id)
             reload()
         } catch (error: SessionExpiredException) {
-            realtime.disconnect()
-            api.signOut()
-            localDeviceId = null
-            isAuthenticated = false
-            errorMessage = error.message
+            clearAuthenticatedState(error.message)
             isLoading = false
         } catch (error: Exception) {
             errorMessage = error.message ?: "Could not prepare this device."
             isLoading = false
+        }
+    }
+
+    fun sendText(text: String, destinationDeviceId: String) {
+        val sourceDeviceId = localDeviceId ?: return
+        if (text.trim().isEmpty()) return
+
+        scope.launch {
+            isLoading = true
+            try {
+                api.sendText(
+                    text = text,
+                    sourceDeviceId = sourceDeviceId,
+                    destinationDeviceId = destinationDeviceId
+                )
+                reload()
+            } catch (error: SessionExpiredException) {
+                clearAuthenticatedState(error.message)
+            } catch (error: Exception) {
+                errorMessage = error.message ?: "Could not send transfer."
+            } finally {
+                isLoading = false
+            }
         }
     }
 
@@ -248,7 +267,8 @@ private fun PixelGoApp(
                             isAuthenticated = true
                             prepareAuthenticatedSession()
                         } catch (error: Exception) {
-                            errorMessage = error.message ?: "Authentication failed."
+                            errorMessage =
+                                error.message ?: "Authentication failed."
                             isLoading = false
                         }
                     }
@@ -261,46 +281,21 @@ private fun PixelGoApp(
                 devices = devices,
                 transfers = transfers,
                 receivedItems = receivedItems,
-                localDeviceId = localDeviceId,
                 onlineDeviceIds = onlineDeviceIds,
+                localDeviceId = localDeviceId,
                 errorMessage = errorMessage,
                 isLoading = isLoading,
-                onRefresh = { scope.launch { reload() } },
-                onSendText = { text, destinationId ->
+                onSend = ::sendText,
+                onRefresh = {
                     scope.launch {
-                        val sourceId = localDeviceId ?: return@launch
-                        isLoading = true
-                        errorMessage = null
-                        try {
-                            api.sendText(
-                                text = text,
-                                sourceDeviceId = sourceId,
-                                destinationDeviceId = destinationId
-                            )
-                            reload()
-                        } catch (error: SessionExpiredException) {
-                            realtime.disconnect()
-                            api.signOut()
-                            localDeviceId = null
-                            isAuthenticated = false
-                            errorMessage = error.message
-                        } catch (error: Exception) {
-                            errorMessage = error.message ?: "Could not send item."
-                        } finally {
-                            isLoading = false
-                        }
+                        receivePendingItems()
+                        reload()
                     }
                 },
                 onSignOut = {
-                    realtime.disconnect()
-                    api.signOut()
-                    localDeviceId = null
-                    isAuthenticated = false
-                    devices = emptyList()
-                    transfers = emptyList()
-                    onlineDeviceIds = emptySet()
-                    receivedItems = emptyList()
-                    errorMessage = null
+                    scope.launch {
+                        clearAuthenticatedState()
+                    }
                 }
             )
         }
@@ -401,25 +396,17 @@ private fun HomeScreen(
     devices: List<PixelDevice>,
     transfers: List<Transfer>,
     receivedItems: List<ReceivedTextItem>,
-    localDeviceId: String?,
     onlineDeviceIds: Set<String>,
+    localDeviceId: String?,
     errorMessage: String?,
     isLoading: Boolean,
+    onSend: (text: String, destinationDeviceId: String) -> Unit,
     onRefresh: () -> Unit,
-    onSendText: (String, String) -> Unit,
     onSignOut: () -> Unit
 ) {
     var showingSend by remember { mutableStateOf(false) }
-    var sendText by remember { mutableStateOf("") }
-    var selectedDestinationId by remember { mutableStateOf("") }
+    val destinations = devices.filter { it.id != localDeviceId }
 
-    val destinationDevices = devices.filter { it.id != localDeviceId }
-
-    LaunchedEffect(destinationDevices) {
-        if (destinationDevices.none { it.id == selectedDestinationId }) {
-            selectedDestinationId = destinationDevices.firstOrNull()?.id.orEmpty()
-        }
-    }
     LazyColumn(
         modifier = Modifier
             .fillMaxSize()
@@ -442,6 +429,13 @@ private fun HomeScreen(
                         "Native cross-device sharing.",
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
+                    if (destinations.isEmpty()) {
+                        Text(
+                            "Sign in on another device to start sending.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
                 }
                 TextButton(onClick = onSignOut) {
                     Text("Sign out")
@@ -501,7 +495,11 @@ private fun HomeScreen(
                         )
                     }
                     Text(
-                        if (onlineDeviceIds.contains(device.id)) "Online" else "Offline",
+                        if (onlineDeviceIds.contains(device.id)) {
+                            "Online"
+                        } else {
+                            "Offline"
+                        },
                         style = MaterialTheme.typography.labelMedium,
                         color = if (onlineDeviceIds.contains(device.id)) {
                             MaterialTheme.colorScheme.primary
@@ -528,6 +526,7 @@ private fun HomeScreen(
                     Text(
                         if (item.kind == "link") "LINK" else "TEXT",
                         style = MaterialTheme.typography.labelSmall,
+                        fontWeight = FontWeight.Bold,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                     Text(item.text)
@@ -552,79 +551,106 @@ private fun HomeScreen(
                 TransferRow(
                     title = transfer.displayName
                         ?: transfer.kind.replaceFirstChar { it.uppercase() },
-                    detail = "${formatBytes(transfer.sizeBytes)} · ${transfer.status}"
+                    detail = formatBytes(transfer.sizeBytes) +
+                        " · " + transfer.status
                 )
-            }
-        }
-
-        if (showingSend) {
-            item {
-                HorizontalDivider()
-                Text("SEND TEXT OR LINK", style = MaterialTheme.typography.labelLarge)
-
-                destinationDevices.forEach { device ->
-                    TextButton(
-                        onClick = { selectedDestinationId = device.id },
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        Text(
-                            if (selectedDestinationId == device.id) {
-                                "✓ " + device.name
-                            } else {
-                                device.name
-                            }
-                        )
-                    }
-                }
-
-                OutlinedTextField(
-                    value = sendText,
-                    onValueChange = { sendText = it },
-                    modifier = Modifier.fillMaxWidth(),
-                    label = { Text("Text or URL") },
-                    minLines = 3,
-                    enabled = !isLoading
-                )
-
-                Spacer(Modifier.height(10.dp))
-
-                Button(
-                    onClick = {
-                        onSendText(sendText, selectedDestinationId)
-                        sendText = ""
-                        showingSend = false
-                    },
-                    modifier = Modifier.fillMaxWidth(),
-                    enabled = sendText.isNotBlank() &&
-                        selectedDestinationId.isNotBlank() &&
-                        !isLoading
-                ) {
-                    Text("SEND")
-                }
             }
         }
 
         item {
             Spacer(Modifier.height(16.dp))
             Button(
-                onClick = { showingSend = !showingSend },
+                onClick = { showingSend = true },
                 modifier = Modifier.fillMaxWidth(),
-                enabled = destinationDevices.isNotEmpty() && !isLoading
+                enabled = destinations.isNotEmpty() && !isLoading
             ) {
-                Text(if (showingSend) "CANCEL" else "+   SEND")
+                Text("+   SEND")
             }
+            Spacer(Modifier.height(28.dp))
+        }
+    }
 
-            if (destinationDevices.isEmpty()) {
+    if (showingSend && destinations.isNotEmpty()) {
+        SendTextDialog(
+            destinations = destinations,
+            onDismiss = { showingSend = false },
+            onSend = { text, destination ->
+                showingSend = false
+                onSend(text, destination)
+            }
+        )
+    }
+}
+
+@Composable
+private fun SendTextDialog(
+    destinations: List<PixelDevice>,
+    onDismiss: () -> Unit,
+    onSend: (String, String) -> Unit
+) {
+    var selectedDeviceId by remember {
+        mutableStateOf(destinations.first().id)
+    }
+    var text by remember { mutableStateOf("") }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Send") },
+        text = {
+            Column {
                 Text(
-                    "Sign in on another device to start sending.",
+                    "TO",
+                    style = MaterialTheme.typography.labelSmall,
+                    fontWeight = FontWeight.Bold
+                )
+
+                destinations.forEach { device ->
+                    TextButton(
+                        onClick = { selectedDeviceId = device.id },
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text(
+                            (if (selectedDeviceId == device.id) "✓  " else "") +
+                                device.name
+                        )
+                    }
+                }
+
+                Spacer(Modifier.height(8.dp))
+
+                OutlinedTextField(
+                    value = text,
+                    onValueChange = { text = it },
+                    label = { Text("Text or link") },
+                    minLines = 4,
+                    modifier = Modifier.fillMaxWidth()
+                )
+
+                Spacer(Modifier.height(8.dp))
+
+                Text(
+                    "HTTP/HTTPS URLs are detected automatically as link transfers.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
-
-            Spacer(Modifier.height(28.dp))
+        },
+        confirmButton = {
+            TextButton(
+                onClick = {
+                    onSend(text, selectedDeviceId)
+                },
+                enabled = text.trim().isNotEmpty()
+            ) {
+                Text("SEND", fontWeight = FontWeight.Bold)
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text("Cancel")
+            }
         }
-    }
+    )
 }
 
 @Composable
@@ -644,11 +670,13 @@ private fun TransferRow(title: String, detail: String) {
 }
 
 private fun formatBytes(bytes: Long): String {
-    if (bytes < 1_024) return "$bytes B"
+    if (bytes < 1_024) return bytes.toString() + " B"
+
     val kilobytes = bytes / 1_024.0
     if (kilobytes < 1_024) {
-        return "${(kilobytes * 10).roundToInt() / 10.0} KB"
+        return ((kilobytes * 10).roundToInt() / 10.0).toString() + " KB"
     }
+
     val megabytes = kilobytes / 1_024.0
-    return "${(megabytes * 10).roundToInt() / 10.0} MB"
+    return ((megabytes * 10).roundToInt() / 10.0).toString() + " MB"
 }
