@@ -18,7 +18,7 @@ struct ContentView: View {
                         ForEach(model.devices) { device in
                             HStack(spacing: 12) {
                                 Circle()
-                                    .fill(.green)
+                                    .fill(device.online ? .green : .secondary)
                                     .frame(width: 8, height: 8)
                                 VStack(alignment: .leading, spacing: 2) {
                                     Text(device.name)
@@ -28,7 +28,7 @@ struct ContentView: View {
                                         .foregroundStyle(.secondary)
                                 }
                                 Spacer()
-                                Text("Online")
+                                Text(device.online ? "Online" : "Offline")
                                     .font(.caption)
                                     .foregroundStyle(.secondary)
                             }
