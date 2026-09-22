@@ -128,6 +128,8 @@ jobs:
           SSH_USER: ${{ secrets.STAGING_SSH_USER }}
           IMAGE: ${{ needs.backend.outputs.image }}
         run: |
+          # shellcheck disable=SC2029
+          # IMAGE is an intentional client-side expansion of an immutable release tag.
           ssh "${SSH_USER}@${SSH_HOST}" \
             "IMAGE='${IMAGE}' bash -s" <<'REMOTE'
           set -euo pipefail
@@ -147,11 +149,12 @@ jobs:
         env:
           HEALTH_URL: ${{ vars.STAGING_HEALTH_URL }}
         run: |
-          for i in {1..30}; do
+          for attempt in {1..30}; do
             if curl --fail --silent "${HEALTH_URL%/}/ready" | grep -q '"status":"ready"'; then
               echo "PASS: staging is ready"
               exit 0
             fi
+            echo "waiting for staging readiness (${attempt}/30)"
             sleep 2
           done
 
@@ -186,6 +189,8 @@ jobs:
           SSH_USER: ${{ secrets.PRODUCTION_SSH_USER }}
           IMAGE: ${{ needs.backend.outputs.image }}
         run: |
+          # shellcheck disable=SC2029
+          # IMAGE is an intentional client-side expansion of an immutable release tag.
           ssh "${SSH_USER}@${SSH_HOST}" \
             "IMAGE='${IMAGE}' bash -s" <<'REMOTE'
           set -euo pipefail
@@ -203,10 +208,11 @@ jobs:
           }
           trap cleanup EXIT
 
-          for i in {1..30}; do
+          for attempt in {1..30}; do
             if curl --fail --silent http://127.0.0.1:18080/ready | grep -q '"status":"ready"'; then
               exit 0
             fi
+            echo "waiting for production candidate (${attempt}/30)"
             sleep 2
           done
 
@@ -221,6 +227,8 @@ jobs:
           SSH_USER: ${{ secrets.PRODUCTION_SSH_USER }}
           IMAGE: ${{ needs.backend.outputs.image }}
         run: |
+          # shellcheck disable=SC2029
+          # IMAGE is an intentional client-side expansion of an immutable release tag.
           ssh "${SSH_USER}@${SSH_HOST}" \
             "IMAGE='${IMAGE}' bash -s" <<'REMOTE'
           set -euo pipefail
@@ -239,11 +247,12 @@ jobs:
         env:
           HEALTH_URL: ${{ vars.PRODUCTION_HEALTH_URL }}
         run: |
-          for i in {1..30}; do
+          for attempt in {1..30}; do
             if curl --fail --silent "${HEALTH_URL%/}/ready" | grep -q '"status":"ready"'; then
               echo "PASS: production is ready"
               exit 0
             fi
+            echo "waiting for production readiness (${attempt}/30)"
             sleep 2
           done
 
