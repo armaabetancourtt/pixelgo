@@ -36,8 +36,25 @@ jobs:
           docker run --rm             -v "${{ github.workspace }}:/repo"             -v "/tmp:/tmp"             tufin/oasdiff:latest             breaking /tmp/base-openapi.yaml /repo/contracts/openapi.yaml
 
   backend:
-    name: Go backend
+    name: Go + PostgreSQL backend
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: pixelgo
+          POSTGRES_PASSWORD: pixelgo
+          POSTGRES_DB: pixelgo
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U pixelgo -d pixelgo"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+    env:
+      DATABASE_URL: postgres://pixelgo:pixelgo@127.0.0.1:5432/pixelgo?sslmode=disable
+      PIXELGO_AUTO_MIGRATE: "true"
     defaults:
       run:
         working-directory: server
@@ -50,7 +67,9 @@ jobs:
           cache: false
 
       - name: Resolve module graph
-        run: go mod tidy
+        run: |
+          go mod tidy
+          cat go.sum
 
       - name: Vet
         run: go vet ./...
@@ -58,20 +77,56 @@ jobs:
       - name: Unit tests
         run: go test -race ./...
 
-      - name: E2E API lifecycle
+      - name: Build API binary
+        run: go build -trimpath -o /tmp/pixelgo-api ./cmd/api
+
+      - name: Binary E2E + persistence across restart
         shell: bash
         run: |
-          go run ./cmd/api > /tmp/pixelgo-api.log 2>&1 &
-          API_PID=$!
-          trap 'kill $API_PID || true' EXIT
-          for i in {1..30}; do
-            if curl --fail --silent http://127.0.0.1:8080/health >/dev/null; then
-              break
+          start_api() {
+            /tmp/pixelgo-api > /tmp/pixelgo-api.log 2>&1 &
+            API_PID=$!
+            for i in {1..30}; do
+              if curl --fail --silent http://127.0.0.1:8080/health >/dev/null; then
+                return 0
+              fi
+              sleep 1
+            done
+            cat /tmp/pixelgo-api.log
+            return 1
+          }
+
+          stop_api() {
+            if [ -n "${API_PID:-}" ]; then
+              kill "$API_PID" || true
+              wait "$API_PID" || true
             fi
-            sleep 1
-          done
-          curl --fail --silent http://127.0.0.1:8080/health
+          }
+
+          trap stop_api EXIT
+
+          start_api
           python3 ../tests/e2e/transfer_flow.py
+
+          stop_api
+          API_PID=""
+          start_api
+
+          python3 - <<'PY'
+          import json
+          import urllib.request
+
+          def get(path):
+              with urllib.request.urlopen("http://127.0.0.1:8080" + path, timeout=3) as response:
+                  return json.loads(response.read())
+
+          devices = get("/v1/devices")
+          transfers = get("/v1/transfers")
+
+          assert len(devices) >= 2, devices
+          assert any(item["status"] == "completed" for item in transfers), transfers
+          print("PASS: PostgreSQL state survives API restart")
+          PY
 
   android:
     name: Android · Kotlin / Compose
