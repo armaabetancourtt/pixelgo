@@ -74,3 +74,61 @@ CREATE INDEX IF NOT EXISTS transfers_user_created_idx
 
 CREATE INDEX IF NOT EXISTS transfers_destination_status_idx
   ON transfers(destination_device_id, status);
+
+CREATE TABLE IF NOT EXISTS notification_outbox (
+  id bigserial PRIMARY KEY,
+  device_id text NOT NULL REFERENCES devices(id) ON DELETE CASCADE,
+  transfer_id text NOT NULL REFERENCES transfers(id) ON DELETE CASCADE,
+  event_type text NOT NULL,
+  payload jsonb NOT NULL,
+  attempts integer NOT NULL DEFAULT 0 CHECK (attempts >= 0),
+  available_at timestamptz NOT NULL DEFAULT now(),
+  locked_at timestamptz,
+  sent_at timestamptz,
+  failed_at timestamptz,
+  last_error text,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  UNIQUE (device_id, transfer_id, event_type)
+);
+
+CREATE INDEX IF NOT EXISTS notification_outbox_pending_idx
+  ON notification_outbox(available_at, id)
+  WHERE sent_at IS NULL AND failed_at IS NULL;
+
+CREATE OR REPLACE FUNCTION pixelgo_enqueue_transfer_ready_notification()
+RETURNS trigger AS $
+BEGIN
+  IF NEW.status = 'ready'::transfer_status
+     AND OLD.status IS DISTINCT FROM NEW.status THEN
+    INSERT INTO notification_outbox (
+      device_id,
+      transfer_id,
+      event_type,
+      payload
+    )
+    SELECT
+      NEW.destination_device_id,
+      NEW.id,
+      'transfer.ready',
+      jsonb_build_object(
+        'transferId', NEW.id,
+        'kind', NEW.kind::text,
+        'displayName', COALESCE(NEW.display_name, '')
+      )
+    FROM devices d
+    WHERE d.id = NEW.destination_device_id
+      AND d.push_token IS NOT NULL
+      AND d.push_token <> ''
+    ON CONFLICT (device_id, transfer_id, event_type) DO NOTHING;
+  END IF;
+
+  RETURN NEW;
+END;
+$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS transfers_ready_notification_outbox ON transfers;
+
+CREATE TRIGGER transfers_ready_notification_outbox
+AFTER UPDATE OF status ON transfers
+FOR EACH ROW
+EXECUTE FUNCTION pixelgo_enqueue_transfer_ready_notification();
