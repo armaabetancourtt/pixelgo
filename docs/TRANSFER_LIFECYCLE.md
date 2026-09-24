@@ -1,3 +1,5 @@
+<p align="center"><img src="../brand/pixelgo-banner.svg" width="680" alt="PixelGo official pastel identity" /></p>
+
 # Transfer lifecycle
 
 A PIXEL GO transfer is durable metadata plus a payload-storage boundary. The application server owns authorization and state; production payload bytes should live in object storage.
