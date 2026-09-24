@@ -3,13 +3,13 @@ import SwiftUI
 /// PixelGo's shared pastel identity. The wordmark is the raster asset derived
 /// from the approved logo; never substitute a generic Text rendering for it.
 enum PixelGoBrand {
-    static let ink = Color(red: 27 / 255, green: 33 / 255, blue: 66 / 255)
-    static let sky = Color(red: 143 / 255, green: 185 / 255, blue: 255 / 255)
-    static let violet = Color(red: 173 / 255, green: 139 / 255, blue: 250 / 255)
-    static let pink = Color(red: 255 / 255, green: 157 / 255, blue: 222 / 255)
-    static let aqua = Color(red: 100 / 255, green: 221 / 255, blue: 249 / 255)
-    static let mint = Color(red: 166 / 255, green: 247 / 255, blue: 239 / 255)
-    static let canvas = Color(red: 255 / 255, green: 252 / 255, blue: 255 / 255)
+    static let ink = Color(red: 27.0 / 255.0, green: 33.0 / 255.0, blue: 66.0 / 255.0)
+    static let sky = Color(red: 143.0 / 255.0, green: 185.0 / 255.0, blue: 255.0 / 255.0)
+    static let violet = Color(red: 173.0 / 255.0, green: 139.0 / 255.0, blue: 250.0 / 255.0)
+    static let pink = Color(red: 255.0 / 255.0, green: 157.0 / 255.0, blue: 222.0 / 255.0)
+    static let aqua = Color(red: 100.0 / 255.0, green: 221.0 / 255.0, blue: 249.0 / 255.0)
+    static let mint = Color(red: 166.0 / 255.0, green: 247.0 / 255.0, blue: 239.0 / 255.0)
+    static let canvas = Color(red: 255.0 / 255.0, green: 252.0 / 255.0, blue: 255.0 / 255.0)
 }
 
 struct PixelGoBrandHeader: View {
