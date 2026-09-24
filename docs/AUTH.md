@@ -1,3 +1,5 @@
+<p align="center"><img src="../brand/pixelgo-banner.svg" width="680" alt="PixelGo official pastel identity" /></p>
+
 # Authentication and session rotation
 
 PIXEL GO treats authentication as a mobile-session problem, not just a login endpoint.
