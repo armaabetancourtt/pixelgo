@@ -5,6 +5,8 @@
     <application
         android:allowBackup="false"
         android:label="PIXEL GO"
+        android:icon="@drawable/pixelgo_app_icon"
+        android:roundIcon="@drawable/pixelgo_app_icon"
         android:theme="@style/Theme.PixelGo"
         android:usesCleartextTraffic="true">
         <service
