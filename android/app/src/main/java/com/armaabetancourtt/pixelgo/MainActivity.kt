@@ -65,8 +65,11 @@ class MainActivity : ComponentActivity() {
         val realtime = RealtimeClient(BuildConfig.API_BASE_URL, sessionStore)
 
         setContent {
-            MaterialTheme {
-                Surface(modifier = Modifier.fillMaxSize()) {
+            MaterialTheme(colorScheme = pixelGoColorScheme) {
+                Surface(
+                    modifier = Modifier.fillMaxSize(),
+                    color = MaterialTheme.colorScheme.background
+                ) {
                     PixelGoApp(api, realtime)
                 }
             }
@@ -457,11 +460,7 @@ private fun AuthScreen(
             .padding(28.dp),
         verticalArrangement = Arrangement.Center
     ) {
-        Text(
-            "PIXEL GO",
-            style = MaterialTheme.typography.headlineLarge,
-            fontWeight = FontWeight.Black
-        )
+        PixelGoBrandHeader()
         Text(
             "Your devices. One private transfer space.",
             style = MaterialTheme.typography.titleMedium,
@@ -585,16 +584,13 @@ private fun HomeScreen(
     ) {
         item {
             Spacer(Modifier.height(28.dp))
+            PixelGoBrandHeader(compact = true)
+            Spacer(Modifier.height(14.dp))
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween
             ) {
                 Column {
-                    Text(
-                        "PIXEL GO",
-                        style = MaterialTheme.typography.headlineLarge,
-                        fontWeight = FontWeight.Black
-                    )
                     Text(
                         "Native cross-device sharing.",
                         color = MaterialTheme.colorScheme.onSurfaceVariant

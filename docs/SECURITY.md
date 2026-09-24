@@ -1,3 +1,5 @@
+<p align="center"><img src="../brand/pixelgo-banner.svg" width="680" alt="PixelGo official pastel identity" /></p>
+
 # Security model
 
 PIXEL GO handles personal files, account credentials and device reachability, so security boundaries are part of the product model.

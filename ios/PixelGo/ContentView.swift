@@ -29,8 +29,7 @@ private struct AuthView: View {
         VStack(alignment: .leading, spacing: 20) {
             Spacer()
 
-            Text("PIXEL GO")
-                .font(.system(size: 38, weight: .black, design: .rounded))
+            PixelGoBrandHeader()
             Text("Your devices. One private transfer space.")
                 .font(.title3)
                 .foregroundStyle(.secondary)
@@ -315,8 +314,7 @@ private struct HomeView: View {
     private var brand: some View {
         HStack(alignment: .top) {
             VStack(alignment: .leading, spacing: 8) {
-                Text("PIXEL GO")
-                    .font(.system(size: 34, weight: .black, design: .rounded))
+                PixelGoBrandHeader(compact: true)
                 Text("Native cross-device sharing.")
                     .foregroundStyle(.secondary)
 

@@ -1,3 +1,5 @@
+<p align="center"><img src="../brand/pixelgo-banner.svg" width="680" alt="PixelGo official pastel identity" /></p>
+
 # Architecture
 
 PIXEL GO is a modular monolith with two independently implemented native clients.

@@ -16,6 +16,8 @@ struct PixelGoApp: App {
         WindowGroup {
             ContentView()
                 .environmentObject(model)
+                .tint(PixelGoBrand.violet)
+                .preferredColorScheme(.light)
                 .task {
                     await model.bootstrap()
                     await requestNotifications()

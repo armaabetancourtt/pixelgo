@@ -1,16 +1,37 @@
-# PIXEL GO — Compartir entre dispositivos, nativo de verdad
+<p align="center"><img src="brand/pixelgo-banner.svg" alt="PixelGo official pastel aurora and white wordmark" width="100%" /></p>
 
-[English](README.md) · [Español](README.es.md)
+<p align="center"><strong>Compartir entre dispositivos, sin fronteras de ecosistema.</strong><br/><sub>MÁNDALO. RECÍBELO DONDE QUIERAS.</sub></p>
 
-> **MÁNDALO. RECÍBELO DONDE QUIERAS.**  
-> PIXEL GO mueve **archivos, fotos, links, texto y clipboard** entre iPhone y Android con dos clientes nativos independientes, un contrato versionado y un backend diseñado alrededor de garantías de entrega.
+<p align="center"><a href="README.md">English</a> · <a href="README.es.md">Español</a></p>
 
-[![CI](https://github.com/armaabetancourtt/pixelgo/actions/workflows/ci.yml/badge.svg)](https://github.com/armaabetancourtt/pixelgo/actions/workflows/ci.yml)
-![iOS](https://img.shields.io/badge/iOS-Swift_6_%7C_SwiftUI-000000?logo=apple&logoColor=white)
-![Android](https://img.shields.io/badge/Android-Kotlin_%7C_Compose-3DDC84?logo=android&logoColor=white)
-![Backend](https://img.shields.io/badge/Backend-Go-00ADD8?logo=go&logoColor=white)
-![PostgreSQL](https://img.shields.io/badge/PostgreSQL-Estado_Durable-4169E1?logo=postgresql&logoColor=white)
-![Redis](https://img.shields.io/badge/Redis-Realtime_%7C_Idempotency-DC382D?logo=redis&logoColor=white)
+<p align="center">
+ <a href="https://github.com/armaabetancourtt/pixelgo/actions/workflows/ci.yml"><img alt="CI status" src="https://github.com/armaabetancourtt/pixelgo/actions/workflows/ci.yml/badge.svg"/></a>
+ <img alt="iOS Swift 6 / SwiftUI" src="https://img.shields.io/badge/iOS-Swift_6_%7C_SwiftUI-AD8BFA?style=flat-square&labelColor=1B2142&logo=apple&logoColor=white"/>
+ <img alt="Android Kotlin / Compose" src="https://img.shields.io/badge/Android-Kotlin_%7C_Compose-8FB9FF?style=flat-square&labelColor=1B2142&logo=android&logoColor=white"/>
+ <img alt="Backend Go" src="https://img.shields.io/badge/Backend-Go-64DDF9?style=flat-square&labelColor=1B2142&logo=go&logoColor=white"/>
+ <img alt="PostgreSQL" src="https://img.shields.io/badge/PostgreSQL-Durable_State-FF9DDE?style=flat-square&labelColor=1B2142&logo=postgresql&logoColor=white"/>
+ <img alt="Redis" src="https://img.shields.io/badge/Redis-Realtime-A6F7EF?style=flat-square&labelColor=1B2142&logo=redis&logoColor=white"/>
+</p>
+
+> **MÁNDALO. RECÍBELO DONDE QUIERAS.** PixelGo mueve archivos, fotos, enlaces, texto y portapapeles entre iPhone y Android. Dos clientes nativos, un contrato versionado y una arquitectura enfocada en entrega, seguridad e integridad.
+
+---
+
+## Identidad oficial
+
+La identidad visual de PixelGo sigue el logotipo aprobado: **letras blancas redondeadas y su destello de cuatro puntas**, sobre una aurora pastel de azul, violeta, rosa y aqua. La interfaz utiliza superficies claras y tipografía legible para que el degradado sea el protagonista sin sacrificar usabilidad.
+
+| Token | Valor | Uso |
+| --- | --- | --- |
+| Cielo | `#8FB9FF` | Base del degradado |
+| Violeta | `#AD8BFA` | Acento principal |
+| Rosa | `#FF9DDE` | Acento cálido |
+| Aqua | `#64DDF9` | Acento frío |
+| Menta | `#A6F7EF` | Brillo secundario |
+| Tinta | `#1B2142` | Texto oscuro legible |
+| Blanco | `#FFFFFF` | Tipografía oficial del logo |
+
+El [logotipo vectorial](brand/pixelgo-wordmark.svg), [banner pastel](brand/pixelgo-banner.svg), [ícono](brand/pixelgo-icon.svg) y la [guía de marca](brand/README.md) quedan en el repositorio. Son adaptaciones vectoriales del material proporcionado, no tipografía genérica recompuesta. Las dos aplicaciones nativas comparten los mismos tokens visuales.
 
 ## El producto
 
