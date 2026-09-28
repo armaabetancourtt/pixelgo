@@ -1,5 +1,8 @@
 <p align="center"><img src="brand/pixelgo-banner.svg" alt="PixelGo official pastel aurora and white wordmark" width="100%" /></p>
 
+> **Operational engineering evidence:** [bounded load-smoke runner](server/cmd/loadtest/main.go) · [automated tests](server/internal/loadtest/loadtest_test.go) · [reproduction and limitations](docs/OPERATIONS_EVIDENCE.md). This measures health/readiness, **not** production transfer throughput.
+
+
 <p align="center"><strong>Native sharing, without the ecosystem walls.</strong><br/><sub>SEND IT. PICK IT UP ANYWHERE.</sub></p>
 
 <p align="center"><a href="README.md">English</a> · <a href="README.es.md">Español</a></p>

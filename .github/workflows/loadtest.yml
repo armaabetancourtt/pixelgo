@@ -1,0 +1,30 @@
+name: Bounded loadtest unit tests
+on:
+  pull_request:
+    paths:
+      - 'server/internal/loadtest/**'
+      - 'server/cmd/loadtest/**'
+      - '.github/workflows/loadtest.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'server/internal/loadtest/**'
+      - 'server/cmd/loadtest/**'
+      - '.github/workflows/loadtest.yml'
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: server/go.mod
+          cache-dependency-path: server/go.sum
+      - name: Verify standalone loadtest package
+        working-directory: server
+        run: go test -race ./internal/loadtest/... ./cmd/loadtest/...
+      - name: Build CLI
+        working-directory: server
+        run: go build ./cmd/loadtest

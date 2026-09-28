@@ -101,31 +101,44 @@ jobs:
           go-version: "1.25.x"
           cache: false
 
-      - name: Start MinIO object storage
+      - name: Start isolated S3-compatible object storage (SeaweedFS)
         shell: bash
         run: |
+          # The former quay.io/minio/minio repository no longer accepts anonymous pulls.
+          # Pin an independently maintained S3-compatible image for this CI fixture.
           docker run --rm -d \
-            --name pixelgo-minio \
-            -p 9000:9000 \
-            -e MINIO_ROOT_USER=pixelgo \
-            -e MINIO_ROOT_PASSWORD=pixelgo-ci-secret \
-            quay.io/minio/minio server /data
+            --name pixelgo-ci-s3 \
+            -p 9000:8333 \
+            -e AWS_ACCESS_KEY_ID=pixelgo \
+            -e AWS_SECRET_ACCESS_KEY=pixelgo-ci-secret \
+            -e S3_BUCKET=pixelgo \
+            chrislusf/seaweedfs:4.44
 
-          for attempt in {1..30}; do
-            if curl --fail --silent http://127.0.0.1:9000/minio/health/live >/dev/null; then
+          for attempt in {1..60}; do
+            # Authenticated S3's unauthenticated root returns 403 when listening.
+            status=$(curl --silent --output /dev/null --write-out '%{http_code}' http://127.0.0.1:9000/ || true)
+            if [ "$status" = "403" ] || [ "$status" = "200" ]; then
               exit 0
             fi
-            echo "waiting for MinIO (${attempt}/30)"
+            echo "waiting for S3 fixture (${attempt}/60, HTTP ${status})"
             sleep 1
           done
 
-          docker logs pixelgo-minio
+          docker logs pixelgo-ci-s3
           exit 1
 
       - name: Resolve module graph
         run: |
-          go mod tidy
-          cat go.sum
+          # Git module proxy occasionally resets individual downloads (HTTP/2 INTERNAL_ERROR).
+          # Retry only dependency resolution, never the stateful E2E workflow.
+          for attempt in 1 2 3; do
+            if go mod download && go mod tidy; then
+              cat go.sum
+              exit 0
+            fi
+            if [ "$attempt" -eq 3 ]; then exit 1; fi
+            sleep $((attempt * 2))
+          done
 
       - name: Vet
         run: go vet ./...
@@ -218,7 +231,7 @@ jobs:
           assert len(devices) == 2, devices
           assert len(transfers) >= 1, transfers
           assert any(item["status"] == "completed" for item in transfers), transfers
-          print("PASS: authenticated PostgreSQL + MinIO state survives API restart")
+          print("PASS: authenticated PostgreSQL + S3 state survives API restart")
           PY
 
   android:
