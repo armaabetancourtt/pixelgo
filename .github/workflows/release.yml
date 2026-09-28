@@ -34,7 +34,7 @@ jobs:
           password: ${{ github.token }}
 
       - name: Build and publish backend image
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: server
           push: true
