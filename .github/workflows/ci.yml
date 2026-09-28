@@ -129,8 +129,16 @@ jobs:
 
       - name: Resolve module graph
         run: |
-          go mod tidy
-          cat go.sum
+          # Git module proxy occasionally resets individual downloads (HTTP/2 INTERNAL_ERROR).
+          # Retry only dependency resolution, never the stateful E2E workflow.
+          for attempt in 1 2 3; do
+            if go mod download && go mod tidy; then
+              cat go.sum
+              exit 0
+            fi
+            if [ "$attempt" -eq 3 ]; then exit 1; fi
+            sleep $((attempt * 2))
+          done
 
       - name: Vet
         run: go vet ./...
