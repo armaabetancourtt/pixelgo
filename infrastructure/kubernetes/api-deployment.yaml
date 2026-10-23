@@ -1,0 +1,28 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: pixelgo-api
+spec:
+  replicas: 2
+  selector:
+    matchLabels: {app: pixelgo-api}
+  template:
+    metadata:
+      labels: {app: pixelgo-api}
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        seccompProfile: {type: RuntimeDefault}
+      containers:
+        - name: api
+          image: ghcr.io/replace-owner/pixelgo-api:pin-digest-before-deploy
+          ports:
+            - {containerPort: 8080}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities: {drop: ["ALL"]}
+            readOnlyRootFilesystem: true
+          resources:
+            requests: {cpu: "100m", memory: "128Mi"}
+            limits: {cpu: "500m", memory: "512Mi"}
