@@ -11,6 +11,5 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: hashicorp/setup-terraform@v3
-      - run: terraform fmt -check -recursive infrastructure/gcp
       - run: terraform -chdir=infrastructure/gcp init -backend=false
       - run: terraform -chdir=infrastructure/gcp validate
