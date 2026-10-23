@@ -1,0 +1,21 @@
+name: Analytics quality
+on:
+  push:
+    paths:
+      - 'analytics/**'
+      - '.github/workflows/analytics-quality.yml'
+  pull_request:
+    paths:
+      - 'analytics/**'
+      - '.github/workflows/analytics-quality.yml'
+permissions:
+  contents: read
+jobs:
+  unit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m unittest discover -s analytics -p 'test_*.py' -v
