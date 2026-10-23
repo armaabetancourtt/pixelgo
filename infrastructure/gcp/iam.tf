@@ -1,4 +1,7 @@
-variable "runtime_service_account_id" { type = string, default = "pixelgo-analytics-runtime" }
+variable "runtime_service_account_id" {
+  type = string
+  default = "pixelgo-analytics-runtime"
+}
 resource "google_service_account" "runtime" {
   account_id = var.runtime_service_account_id
   display_name = "Pixel Go analytics runtime"
