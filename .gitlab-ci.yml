@@ -1,0 +1,6 @@
+stages: [quality]
+quality:
+  image: python:3.12-slim
+  stage: quality
+  script:
+    - bash scripts/check-analytics.sh
