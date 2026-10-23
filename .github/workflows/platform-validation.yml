@@ -1,0 +1,16 @@
+name: Platform integration validation
+on:
+  push:
+    branches: [feature/production-integrations-2026]
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  terraform:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+      - run: terraform fmt -check -recursive infrastructure/gcp
+      - run: terraform -chdir=infrastructure/gcp init -backend=false
+      - run: terraform -chdir=infrastructure/gcp validate
